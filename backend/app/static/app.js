@@ -327,6 +327,25 @@ function toggleEntryReveal() {
 }
 
 /* ---------- 表单弹窗（新增 / 编辑） ---------- */
+// 编辑模式锁框可见时，下方表单 + 操作按钮统一置灰；取消按钮始终可用
+const FORM_EDIT_LOCKED_IDS = [
+  "f-username", "f-algorithm",
+  "f-entry-password", "f-entry-password-confirm", "f-new-entry-password",
+  "f-orgkey", "f-group", "f-secret",
+  "f-reveal", "f-gen", "f-entry-reveal",
+  "f-notes", "f-comment",
+  "form-save",
+];
+function setFormEditLocked(locked) {
+  for (const id of FORM_EDIT_LOCKED_IDS) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !!locked;
+  }
+  // 取消按钮永远可用（让用户能退出）
+  const cancel = document.getElementById("form-cancel");
+  if (cancel) cancel.disabled = false;
+}
+
 function openAdd() {
   state.editingId = null;
   state.originalSecret = "";
@@ -350,6 +369,7 @@ function openAdd() {
   fillGroupSelect("f-group", null);
   $("form-error").textContent = "";
   applyAlgoUI();
+  setFormEditLocked(false);
   $("form-modal").classList.remove("hidden");
   $("f-username").focus();
 }
@@ -384,7 +404,7 @@ async function openEdit(id) {
     $("f-secret").type = "password";
     $("f-reveal").textContent = "显示";
     $("form-lock").classList.remove("hidden");
-    $("form-save").disabled = true;
+    setFormEditLocked(true);
     $("form-modal").classList.remove("hidden");
     $("form-lock-password").value = "";
     $("form-lock-error").textContent = "";
@@ -402,7 +422,7 @@ async function openEdit(id) {
     $("f-secret").type = "password";
     $("f-reveal").textContent = "显示";
     $("form-lock").classList.add("hidden");
-    $("form-save").disabled = false;
+    setFormEditLocked(false);
     $("form-modal").classList.remove("hidden");
     $("f-username").focus();
   }
@@ -423,10 +443,12 @@ async function unlockEdit() {
     $("f-reveal").textContent = "显示";
     $("f-entry-password").value = pw; // 记住当前密码，保存时作为 entry_password 使用
     $("form-lock").classList.add("hidden");
-    $("form-save").disabled = false;
+    setFormEditLocked(false);
     $("f-username").focus();
   } catch (e) {
+    // 解密失败：保留锁框 + 下方面板继续置灰
     $("form-lock-error").textContent = e.message;
+    setFormEditLocked(true);
   } finally {
     hideWait();
   }
@@ -440,7 +462,10 @@ async function fetchSecret(id, pw) {
   });
 }
 
-function closeForm() { $("form-modal").classList.add("hidden"); }
+function closeForm() {
+  setFormEditLocked(false);
+  $("form-modal").classList.add("hidden");
+}
 
 async function saveForm() {
   $("form-error").textContent = "";

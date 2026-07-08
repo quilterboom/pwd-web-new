@@ -61,6 +61,12 @@ input, textarea, select {
   color: var(--text);
 }
 input:focus, textarea:focus, select:focus { outline: 2px solid #bfdbfe; border-color: var(--primary); }
+input:disabled, select:disabled, textarea:disabled {
+  background: #f3f4f6;
+  color: #9ca3af;
+  cursor: not-allowed;
+  opacity: .7;
+}
 label { font-size: 13px; color: var(--muted); margin-top: 10px; }
 
 /* 顶栏 */
