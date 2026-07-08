@@ -1,28 +1,31 @@
 # 密码管理 · 服务端加解密密码管理器
 
-一个面向团队的 **密码 + 文件保险箱**。**加解密全部在服务器端完成**：客户端只负责录入与展示明文，密钥由服务器自动生成。适用于需要集中托管密钥、审计密码变更、按分组隔离可见性的内部场景。
+一个面向团队的 **零知识密码保险箱**。每条密码由用户自己的「解密密码」保护（PBKDF2-SM3 + SM4-CBC），**服务端永远拿不到你的明文密码**——即便数据库泄露，没有「解密密码」依然无法还原。适用于需要集中托管密钥、审计密码变更、按分组隔离可见性的内部场景。
 
 ## 加密体系（先看这里）
 
-本工具在服务端用三种机制处理数据，**默认走零知识方案**，服务端永远拿不到你密码的明文：
+本工具默认走**零知识方案**，所有数据使用「外层非对称（可选 GPG / SM2）+ 内层 SM4-CBC 对称」的双层加密；对称方案则只有内层。每层的密码都由对应密钥独立掌握，服务端不持有任何能直接解出明文的密钥。
 
 | 数据类型 | 默认加密方案 | 服务端能否解出明文 | 说明 |
 | --- | --- | --- | --- |
-| **密码条目** | `entry` —— 每条独立的「条目密码」做 PBKDF2-SM3 + SM4-CBC 对称加密 | ❌ **不能** | 默认行为。服务端只存 salt/iv/密文，没有条目密码还原不了明文。 |
-| **密码条目（旧数据）** | `legacy` —— 服务端 GPG/SM2 密钥对 | ✅ 能 | 兼容旧版本数据（升级前历史记录）。 |
-| **文件保险箱** | 服务端 GPG 或 SM2 公钥加密 | ✅ 能 | 文件通常由组织统一管理，依赖服务端密钥；上传/解密/删除均记审计。 |
+| **密码条目（对称）** | `symmetric` —— 每条独立的「解密密码」做 PBKDF2-SM3 + SM4-CBC | ❌ **不能** | 默认行为。任何算法下都会加这一层（即使外层是 GPG/SM2）。服务端只存 salt/iv/密文，没有「解密密码」还原不了明文。 |
+| **密码条目（GPG / SM2）** | 外层用所选 OrgKey 公钥（或回退服务端密钥）加密内层 SM4-CBC 密文 | ❌ **不能** | 「外层非对称 + 内层对称」双重保护。私钥在服务端时属于历史遗留兼容场景，新数据仍走对称层。 |
+| **密钥库条目** | 公钥必填、私钥可选（无口令保护） | ✅ 仅在持有私钥时能 | 多密钥支持：每分组可保存多对命名密钥（GPG / SM2）。 |
 
-> **零知识方案的含义**：即便数据库泄露，没有条目密码依然无法还原明文。
-> 条目密码**不会**被持久化，每次查看/修改由用户在客户端输入、随请求传入 HTTPS。
+> **零知识方案的含义**：即便数据库泄露，没有「解密密码」依然无法还原明文。
+> 「解密密码」**不会**被持久化，每次查看/修改由用户在弹窗中输入、随请求传至服务端。
 
 ## 功能
 
-- ✅ **零知识密码存储**：每条密码由用户自己的「条目密码」保护（PBKDF2-SM3 + SM4-CBC），服务端不可解密。
-- ✅ **完整 CRUD**：密码查看 / 新增 / 修改 / 删除；新增可选择加密算法（对称零知识 / GPG / SM2）；等待窗口保证后台解析完再消失。
-- ✅ **文件保险箱**：上传任意文件，服务端用 GPG 或 SM2 公钥加密落盘；可下载密文或解密下载原文；上传 / 解密 / 删除均记审计。
+- ✅ **零知识密码存储**：每条密码由用户自己的「解密密码」保护（PBKDF2-SM3 + SM4-CBC），服务端不可解密。
+- ✅ **完整 CRUD**：密码查看 / 新增 / 修改 / 删除。
+  - 新增：选择加密算法（**对称零知识** / GPG / SM2），任何算法都必须设置一条「解密密码」并要求输入两次确认。
+  - 编辑：受「解密密码」保护的条目先弹锁框输入当前密码，解密回填后才能编辑；可单独设置新「解密密码」。
+  - 查看：「解密密码」保护时通过 `POST /{id}/unlock` 在请求体中传入密码解密。
 - ✅ **组织密钥库**：在「密钥库」页签查看 / 生成 / 导入 / 导出本组织下的 GPG 与 SM2 密钥对；公钥下载便于给他人加密、私钥下载自留；按组织隔离，非管理员只看自己所属组织。
-- ✅ **修改记录（审计日志）**：每次新增、修改、删除都留下时间、操作人、变更说明，仅存密文快照不存明文。
-- ✅ **多账号 + 分组隔离**：管理员可新增账号；数据（密码 / 文件）按分组绑定，普通用户只看到所属分组的数据，管理员可跨组查看。
+- ✅ **批量明文导出**：多选密码 → 一次性输入或逐项填写各条目的「解密密码」→ 下载 JSON / CSV（仅含明文）。解压密码通过请求体传，不会出现在 URL / 访问日志 / 浏览器历史中。
+- ✅ **修改记录（审计日志）**：每次新增、修改、删除都留下时间、操作人、变更说明（自动汉化变更字段），仅存密文快照不存明文。
+- ✅ **多账号 + 分组隔离**：管理员可新增账号；数据按分组绑定，普通用户只看到所属分组的数据，管理员可跨组查看。
 - ✅ **系统管理面板**：在界面上管理账号（创建 / 编辑 / 删除 / 分配分组）和分组（创建 / 编辑成员 / 删除，分组有数据时阻止删除）。
 - ✅ **简单登录**：JWT 登录（`passlib` + `bcrypt`）。
 - ✅ **SQLite 本地存储**：零外部依赖，开箱即用。平滑迁移：旧库首次启动自动加列、存量数据归入默认分组。
@@ -33,7 +36,7 @@
 | 层 | 选型 |
 | --- | --- |
 | 后端 | Python + FastAPI + SQLAlchemy |
-| 加密 | `pgpy`（GPG/OpenPGP）、`gmssl`（SM2 / SM3 / SM4） |
+| 加密 | `pgpy`（GPG/OpenPGP）、`gmssl`（SM2 / SM3 / SM4）+ `cryptography` 的 `hashes.SM3` 用于加速 PBKDF2 |
 | 存储 | SQLite |
 | 认证 | JWT（PyJWT）+ bcrypt |
 | 前端 | 原生 HTML / CSS / JS（由后端静态托管） |
@@ -47,7 +50,7 @@ pwd-web/
 │   │   ├── main.py              # FastAPI 入口，挂载 API 与静态资源
 │   │   ├── config.py            # 配置（端口、密钥、管理员）
 │   │   ├── db.py                # SQLAlchemy 引擎 / Session
-│   │   ├── models.py            # User / Group / KeyRecord / PasswordEntry / History / FileVault / FileHistory
+│   │   ├── models.py            # User / Group / KeyRecord / OrgKey / PasswordEntry / History
 │   │   ├── security.py          # 密码哈希 + JWT
 │   │   ├── seed.py              # 首次启动初始化（建表、管理员、默认分组、密钥）
 │   │   ├── crypto/
@@ -56,12 +59,12 @@ pwd-web/
 │   │   │   ├── entry_cipher.py  # 条目密码对称加密（PBKDF2-SM3 + SM4-CBC）
 │   │   │   └── manager.py       # 算法分发与密钥读取
 │   │   ├── core/deps.py         # 认证与分组权限依赖
-│   │   ├── routers/             # auth / passwords / files / history / keys / admin
+│   │   ├── routers/             # auth / passwords / history / keys / admin
 │   │   └── static/              # 前端 index.html / app.js / styles.css
 │   ├── run.py                   # 启动脚本
 │   ├── requirements.txt
 │   ├── Dockerfile               # 容器镜像构建（支持离线 / 联网两种依赖来源）
-│   ├── offline/                 # 离线部署套件（build_image、get_wheels、install、systemd）
+│   ├── offline/                 # 离线部署套件（build_image、get_wheels、install、systemd、smoke_* 冒烟脚本）
 │   └── .env.example
 ├── docker-compose.yml           # 容器编排（端口 / 卷 / 环境变量，platform=linux/amd64）
 └── README.md
@@ -105,11 +108,10 @@ venv/bin/python run.py            # macOS / Linux
 ### 4. 使用（首次添加密码）
 
 1. 用管理员登录后，在「密码」页签点 **新增密码**。
-2. 填写标题 / 账号 / 密码明文 / 备注 / **所属分组**。
-3. **必填：条目密码**（用于加密这一条；后续查看 / 修改本条都需再次输入）。
-4. 保存后，列表里会出现这一条；点击查看需输入刚才设置的「条目密码」。
-
-> ⚠️ **条目密码一旦忘记无法找回**（这是零知识方案的代价）。
+2. 填写账号 / 密码明文 / 备注 / **所属分组**。
+3. 选择**加密方式**（默认「对称加密（条目密码，零知识）」）。GPG / SM2 时可选择本组织 OrgKey，否则使用服务端默认密钥。
+4. **必填：「解密密码」** —— 无论采用哪种加密方式都必须填写一次、且新增时需要两次确认。**该密码一旦忘记无法找回**（这是零知识方案的代价）。
+5. 保存后，列表里会出现这一条；点击查看需输入刚才设置的「解密密码」。
 
 ## 离线部署（不用 Docker，纯 Python）
 
@@ -192,7 +194,7 @@ bash backend/offline/build_image.sh          # Linux / macOS
 bash backend/offline/build_image.sh offline
 ```
 
-导出后的 tar 包约 **70MB**（依赖干净的基础功能版本）；启用组织密钥库后约 **141MB**（含 `pgpy` / `gmssl`）。
+导出后的 tar 包约 **222MB**（含全部加密算法 + OrgKey 库）。
 
 > ⚠️ 离线构建时，`backend/offline/wheels/` 必须是 **Linux (manylinux x86_64, cp313)** 版依赖包，
 > 可用 `get_wheels.sh` 配合 `--platform manylinux2014_x86_64 --python-version 313 --abi cp313` 在任意联网机下载。
@@ -221,7 +223,7 @@ ADMIN_PASSWORD='请改成强密码' docker compose up -d
 启动后访问 <http://localhost:9010> 。`docker-compose.yml` 已做：
 
 - 端口映射 `${PORT:-9010}:9010`
-- 数据卷 `./backend/data:/app/data`（数据库 + JWT 密钥 + 文件保险箱全部持久化）
+- 数据卷 `./backend/data:/app/data`（数据库 + JWT 密钥持久化）
 - `restart: unless-stopped` 自动重启
 - 强制 `platform: linux/amd64`
 
@@ -230,11 +232,11 @@ ADMIN_PASSWORD='请改成强密码' docker compose up -d
 
 ## 安全说明
 
-- **明文走网络**：加解密在服务端进行，查看 / 新增时条目密码会通过 HTTP 传输。生产环境务必启用 **HTTPS**（反向代理如 Nginx / Caddy 配置 TLS）。
-- **私钥保护**：数据库中 GPG / SM2 私钥以明文存储（仅用于兼容旧 `legacy` 密码条目 + 文件保险箱）。生产环境建议：
+- **明文走网络**：加解密在服务端进行，查看 / 新增 / 明文批量导出时，「解密密码」会通过 HTTP 传输。生产环境务必启用 **HTTPS**（反向代理如 Nginx / Caddy 配置 TLS）。
+- **私钥保护**：数据库中 GPG / SM2 私钥以明文存储（用于兼容旧 `legacy` 密码条目）；新增条目默认走对称方案，服务端密钥不再是解密主路径。生产环境建议：
   - 对 `data/password_manager.db` 做文件权限限制与备份加密；
   - 或将私钥字段改为使用主密钥（环境变量 `SECRET_KEY`）加密后再落库。
-- **零知识密码条目不受私钥泄露影响**：因条目密码独立派生 SM4 密钥，服务端密钥仅兼容 legacy 数据。
+- **零知识密码条目不受私钥泄露影响**：因「解密密码」独立派生 SM4 密钥，服务端密钥仅兼容 legacy 数据。
 - **JWT 有效期**：默认 24 小时，可用 `TOKEN_EXPIRE_MINUTES` 调整。
 - **CORS**：当前为 `allow_origins=["*"]`，仅适用于内网工具部署；公网部署请收敛 origin。
 
@@ -244,24 +246,20 @@ ADMIN_PASSWORD='请改成强密码' docker compose up -d
 | --- | --- | --- |
 | POST | `/api/auth/login` | 登录获取 token |
 | GET | `/api/auth/me` | 当前用户（含可见分组） |
-| GET | `/api/keys/status` | 服务端密钥就绪情况（兼容 legacy 方案 / 文件保险箱） |
-| GET | `/api/orgkeys?group_id=` | 组织密钥库列表（按组织过滤；非管理员看自己所属组织） |
+| GET | `/api/keys/status` | 服务端密钥就绪情况（兼容 legacy 方案） |
+| GET | `/api/orgkeys?group_id=&algorithm=` | 组织密钥库列表（按分组 + 算法过滤；非管理员看自己所属组织） |
 | POST | `/api/orgkeys/generate` | 新建密钥（GPG / SM2，公私钥完整生成） |
-| POST | `/api/orgkeys/import` | 导入密钥（公钥必填、私钥可选；带 round-trip 自检） |
+| POST | `/api/orgkeys/import` | 导入密钥（公钥必填、私钥可选；带 round-trip 自检；私钥必须**无口令保护**） |
 | GET | `/api/orgkeys/{kid}/export?kind=public\|private` | 导出公钥 / 私钥为附件下载（双 Content-Disposition 兼容中文文件名） |
 | DELETE | `/api/orgkeys/{kid}` | 删除密钥记录 |
 | GET | `/api/passwords` | 密码列表（不含明文） |
-| POST | `/api/passwords` | 新增（**必填**：`title` `secret` `group_id` `entry_password`） |
-| GET | `/api/passwords/{id}?entry_password=...` | 查看（`legacy` 免条目密码，`entry` 必须提供） |
-| PUT | `/api/passwords/{id}` | 修改（`entry` 方案需 `entry_password`；可选 `new_entry_password` 改密） |
+| POST | `/api/passwords` | 新增（**必填**：`secret` `group_id` `entry_password`；另可选 `algorithm`、`orgkey_id`、`comment`） |
+| GET | `/api/passwords/{id}` | 查看（旧式 `legacy` 免条目密码；`entry` 受保护请用 unlock） |
+| POST | `/api/passwords/{id}/unlock` | 解密（请求体 JSON `{entry_password}`，不在 URL 中） |
+| PUT | `/api/passwords/{id}` | 修改（`entry` 方案需 `entry_password`；可选 `new_entry_password` 改密；可选 `comment`） |
 | DELETE | `/api/passwords/{id}` | 删除（软删除 + 记审计） |
 | GET | `/api/passwords/{id}/history` | 修改记录 |
-| POST | `/api/files/upload` | 上传文件并加密（form: `file` + `algorithm` + **`group_id`**） |
-| GET | `/api/files` | 文件保险箱列表（不含密文） |
-| GET | `/api/files/{id}/download` | 下载加密后的密文文件（.gpg / .sm2） |
-| GET | `/api/files/{id}/decrypt` | 服务端解密后下载原文（记审计） |
-| DELETE | `/api/files/{id}` | 删除（软删除 + 记审计） |
-| GET | `/api/files/{id}/history` | 文件修改记录（上传 / 解密 / 删除） |
+| POST | `/api/passwords/export` | 批量明文导出（请求体 JSON `{ids, passwords, format}`，无加密备份） |
 | GET | `/api/groups/mine` | 当前用户可见分组（用于创建数据时的下拉） |
 | GET | `/api/admin/users` | 账号列表（仅管理员） |
 | POST | `/api/admin/users` | 新增账号（含分组归属） |
@@ -276,7 +274,8 @@ ADMIN_PASSWORD='请改成强密码' docker compose up -d
 
 每条密码的变更都会保存在 `history` 表，前端「记录」按钮可查看：
 
-| 时间 | 动作 | 标题 | 账号 | 算法 | 操作人 | 说明 |
-| --- | --- | --- | --- | --- | --- | --- |
-| 2026-07-07 11:00 | 新增 | 数据库 root | root | symmetric | admin | 新增密码 |
-| 2026-07-07 15:20 | 修改 | 数据库 root | root | symmetric | admin | 修改了 secret |
+| 时间 | 动作 | 账号 | 算法 | 操作人 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| 2026-07-08 11:00 | 新增 | root | 对称加密 | admin | 新增密码 |
+| 2026-07-08 15:20 | 修改 | root | 对称加密 | admin | 修改了密码明文、解密密码 |
+| 2026-07-08 16:01 | 删除 | root | 对称加密 | admin | 删除密码 |

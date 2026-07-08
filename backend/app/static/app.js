@@ -574,6 +574,31 @@ function copySecret() {
 }
 
 /* ---------- 修改记录弹窗 ---------- */
+// 历史 comment 里可能出现的英文字段名 -> 中文标签；新写入已直接用中文，这里是对存量/接口残留做兜底
+const HISTORY_FIELD_LABELS = {
+  title: "标题",
+  username: "账号",
+  notes: "备注",
+  secret: "密码明文",
+  entry_password: "解密密码",
+  algorithm: "加密方式",
+  orgkey_id: "加密密钥",
+};
+const HISTORY_ACTION_LABELS = { create: "新增", update: "修改", delete: "删除" };
+
+/* 把后端写入的 comment 里残留的英文字段名替换成中文。
+ * 例："修改了 secret,entry_password,notes" -> "修改了 密码明文，解密密码，备注"
+ */
+function humanizeComment(c) {
+  if (!c) return c;
+  // 匹配 "修改了 xxx,yyy" 形式（xxx 可能是英文或中文，统一查表翻译）
+  return c.replace(/(修改了)\s+([^\s,.，。；;]+(?:[\s,，；;][^\s,.，。；;]+)*)/g, (_, verb, list) => {
+    const parts = list.split(/[\s,，;；]+/).filter(Boolean);
+    const translated = parts.map((p) => HISTORY_FIELD_LABELS[p] || p).join("，");
+    return verb + " " + translated;
+  });
+}
+
 async function openHistory(id) {
   try {
     const rows = await api("/api/passwords/" + id + "/history");
@@ -582,16 +607,15 @@ async function openHistory(id) {
     if (!rows.length) {
       tbody.innerHTML = `<tr><td colspan="6" style="color:#6b7280">暂无记录</td></tr>`;
     }
-    const actLabel = { create: "新增", update: "修改", delete: "删除" };
     for (const r of rows) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${fmtTime(r.changed_at)}</td>
-        <td class="act-${r.action}">${actLabel[r.action] || r.action}</td>
+        <td class="act-${r.action}">${HISTORY_ACTION_LABELS[r.action] || r.action}</td>
         <td>${esc(r.username || "")}</td>
         <td>${algoBadge(r.algorithm)}</td>
         <td>${esc(r.changed_by || "")}</td>
-        <td>${esc(r.comment || "")}</td>`;
+        <td>${esc(humanizeComment(r.comment || ""))}</td>`;
       tbody.appendChild(tr);
     }
     $("history-modal").classList.remove("hidden");
@@ -622,53 +646,66 @@ function genRandom() {
   $("f-reveal").textContent = "隐藏";
 }
 
-/* ---------- 批量导出密码 ---------- */
+/* ---------- 批量导出密码（仅明文） ---------- */
 function openExport() {
   if (!state.selected.size) { showToast("请先勾选要导出的密码"); return; }
   $("export-count").textContent = String(state.selected.size);
-  document.querySelector('input[name="exp-format"][value="json"]').checked = true;
-  document.querySelector('input[name="exp-mode"][value="cipher"]').checked = true;
-  $("export-plain-fields").classList.add("hidden");
+  // 默认 JSON 格式
+  $("exp-fmt-json").checked = true;
+  $("exp-fmt-csv").checked = false;
   $("export-master-pw").value = "";
   renderExportPerRow("");
   $("export-error").textContent = "";
   $("export-modal").classList.remove("hidden");
+  $("export-master-pw").focus();
 }
 
 function renderExportPerRow(masterPw) {
   const tbody = $("export-perrow");
   tbody.innerHTML = "";
   const map = {};
-  state.entries.forEach((e) => { if (state.selected.has(e.id)) map[e.id] = e.username; });
+  state.entries.forEach((e) => { if (state.selected.has(e.id)) map[e.id] = e; });
   const ids = [...state.selected];
   for (const id of ids) {
-    const uname = map[id] || ("#" + id);
+    const e = map[id];
+    const uname = (e && e.username) || ("#" + id);
+    const algoText = e && e.algorithm === "symmetric" ? "对称加密" : (e && e.algorithm === "sm2" ? "SM2" : "GPG");
     const div = document.createElement("div");
     div.className = "exp-row";
-    div.innerHTML = `<label title="${esc(uname)}">${esc(uname)}</label>` +
-      `<input type="password" class="exp-pw" data-id="${id}" value="${esc(masterPw)}" placeholder="该条目解密密码" autocomplete="off" />`;
+    div.innerHTML = `
+      <div class="exp-row-info">
+        <div class="exp-row-name" title="${esc(uname)}">${esc(uname)}</div>
+        <div class="exp-row-algo">${esc(algoText)}</div>
+      </div>
+      <input type="password" class="exp-pw" data-id="${id}" value="${esc(masterPw)}" placeholder="该条目解密密码" autocomplete="off" />`;
     tbody.appendChild(div);
   }
 }
 
+/* 「统一密码」回车 / 失焦时同步到逐项密码框（仅覆盖仍为空的） */
+function syncMasterToPerRow() {
+  const master = $("export-master-pw").value;
+  if (master === "") return;
+  document.querySelectorAll("#export-perrow .exp-pw").forEach((inp) => {
+    if (!inp.value) inp.value = master;
+  });
+}
+
 async function doExport() {
   const fmt = document.querySelector('input[name="exp-format"]:checked').value;
-  const plaintext = document.querySelector('input[name="exp-mode"]:checked').value === "plain";
   const ids = [...state.selected];
+  const master = $("export-master-pw").value || "";
   const passwords = {};
-  if (plaintext) {
-    const master = $("export-master-pw").value || "";
-    document.querySelectorAll("#export-perrow .exp-pw").forEach((inp) => {
-      passwords[inp.dataset.id] = inp.value || master;
-    });
-  }
+  document.querySelectorAll("#export-perrow .exp-pw").forEach((inp) => {
+    passwords[inp.dataset.id] = inp.value || master;
+  });
   $("export-error").textContent = "";
   showWait("正在导出…");
   try {
     const res = await fetch("/api/passwords/export", {
       method: "POST",
       headers: { Authorization: "Bearer " + state.token, "Content-Type": "application/json" },
-      body: JSON.stringify({ ids, passwords, format: fmt, plaintext }),
+      body: JSON.stringify({ ids, passwords, format: fmt, plaintext: true }),
     });
     if (!res.ok) {
       let detail = null;
@@ -687,12 +724,6 @@ async function doExport() {
   } finally {
     hideWait();
   }
-}
-
-/* 切换导出内容（加密备份 / 明文）时显隐逐条密码区 */
-function toggleExportPlain() {
-  const plain = document.querySelector('input[name="exp-mode"]:checked').value === "plain";
-  $("export-plain-fields").classList.toggle("hidden", !plain);
 }
 
 async function apiBlob(path) {
@@ -1183,9 +1214,8 @@ function bind() {
   $("export-btn").addEventListener("click", openExport);
   $("export-cancel").addEventListener("click", () => $("export-modal").classList.add("hidden"));
   $("export-go").addEventListener("click", doExport);
-  document.querySelectorAll('input[name="exp-mode"]').forEach((r) =>
-    r.addEventListener("change", toggleExportPlain)
-  );
+  // 「统一密码」变化时，把仍为空的逐项密码框填上（用户体验更顺）
+  $("export-master-pw").addEventListener("input", syncMasterToPerRow);
 
   // 系统管理
   $("admin-btn").addEventListener("click", openAdmin);

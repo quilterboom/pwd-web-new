@@ -318,15 +318,15 @@ def update(
     changes: list[str] = []
     if req.title is not None and req.title != entry.title:
         entry.title = req.title
-        changes.append("title")
+        changes.append("标题")
     if req.username is not None and req.username != entry.username:
         entry.username = req.username
-        changes.append("username")
+        changes.append("账号")
     if req.notes is not None and req.notes != entry.notes:
         entry.notes = req.notes
-        changes.append("notes")
+        changes.append("备注")
     if req.orgkey_id is not None and req.orgkey_id != entry.orgkey_id:
-        changes.append("orgkey_id")
+        changes.append("加密密钥")
 
     has_entry = bool(entry.entry_salt) and bool(entry.entry_iv)
     target_algo = (req.algorithm or entry.algorithm or "symmetric").lower()
@@ -370,7 +370,7 @@ def update(
     if req.secret not in (None, ""):
         new_secret = req.secret
         if req.secret != current_secret:
-            changes.append("secret")
+            changes.append("密码明文")
     else:
         new_secret = current_secret
 
@@ -425,9 +425,9 @@ def update(
             entry.entry_iv = inner["iv"]
 
     if (not preserve_noentry) and req.new_entry_password:
-        changes.append("entry_password")
+        changes.append("解密密码")
     if algo_changed:
-        changes.append("algorithm")
+        changes.append("加密方式")
     entry.updated_by = user.username
     entry.updated_at = datetime.now(timezone.utc)
     db.commit()
@@ -443,7 +443,7 @@ def update(
             ciphertext=entry.ciphertext,
             notes=entry.notes,
             changed_by=user.username,
-            comment=req.comment or ("修改了 " + ",".join(changes) if changes else "无变更"),
+            comment=req.comment or ("修改了 " + "，".join(changes) if changes else "无变更"),
         )
     )
     db.commit()

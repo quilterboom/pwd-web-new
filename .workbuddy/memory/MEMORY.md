@@ -39,17 +39,27 @@
 13. **Docker 镜像自包含导出 tar 导致膨胀**——`COPY offline ./offline` 会把 `offline/password_manager_image.tar` 打进镜像，每次重建都嵌入上一个 tar（runaway 到 425MB）。已加 `backend/.dockerignore` 排除 `offline/*.tar`、`offline/smoke_entry.py`、`.venv/`、`data/`、`.secret_key`、`.smoke_*.py`。
 14. **pgpy 无法解锁/解密受口令保护的私钥**——PGPy 0.6.0 下 `key.unlock(passwd)` 即使口令正确也不把 `is_unlocked` 置 True、也无 `unprotect` 方法 → 受口令私钥在本系统**无法使用**。导入受口令私钥应直接拒绝并给清晰提示（指引用 GnuPG 去口令）。
 15. **真实 GPG 密钥含独立加密子密钥**——`pgpy.PGPKey.from_blob(...)[0]` 只取主密钥，主密钥通常只用于签名/认证，解密必须遍历 `primary.subkeys`；`gpg_crypto.decrypt/_collect_keys` 已按此实现。自生成的密钥（无子密钥、主密钥兼加解密）不受影响。
+16. **docker commit 不会继承原镜像的 CMD/EXPOSE/VOLUME，从 `sleep 600` 启动的容器 commit 时保留 sleep 的 CMD**——必须显式 `docker commit --change 'CMD [...]' --change 'EXPOSE 9010' --change 'VOLUME ["/app/data"]' ...`，否则镜像启动后只 sleep 不跑 uvicorn。容器 commit 前**不能 `docker rm`**（否则 commit 找不到容器）。
+17. **docker commit「替换整段代码」的正确姿势**——只 `docker cp` 几个改动的文件，会留下旧镜像里残留的陈旧代码（如本轮旧 `passwdpm:latest` 仍带 `files.py` 路由）。正确：先 `docker exec ... rm -rf /app/app /app/run.py`，再 cp 完整新代码进 `/app/app`，最后 commit。旧镜像若依赖层健康可继续作为基础（避免 pip install SIGKILL）。
+18. **smoke_entry.py 等旧测试已 stale**——它们仍在用陈旧的 `GET /api/passwords/{id}?entry_password=...` 路径（已在第二轮 UI 调整里统一改 `POST /api/passwords/{id}/unlock` body 形式），跑会全 405 Method Not Allowed。新断言在 `smoke_history_zh.py`、`smoke_vault_export.py`、`smoke_hybrid.py`、`smoke_keyimport.py`。
 
 ## 端到端验证模式
 - 容器内跑测试 = 绕开主机 sandbox 的最稳方法：`docker cp script.py X:/tmp/ && docker exec X python3 /tmp/script.py`。
-- 冒烟脚本（均需在容器内跑，绕开沙箱）：`smoke_entry.py`（18 项：entry + 多租户 + OrgKey + 旧式 legacy）、`smoke_hybrid.py`（37 项：symmetric/gpg/sm2 混合加密 + needs_password）、`smoke_keyimport.py`（OrgKey 导入：含子密钥外部密钥 + 受口令私钥拒入）、`smoke_vault_export.py`（13 项：POST /unlock、批量导出 JSON/CSV、文件接口已移除、缺解密密码被拒）。覆盖：登录、JWT、groups/mine、新增 entry、错误密码 401、正确解密还原、改密码、history、密钥状态、未授权 401、OrgKey。
-- 测试容器：`docker run -d --name password-manager-test --platform linux/amd64 -p 9010:9010 -v /tmp/password-manager-test-data:/app/data -e ADMIN_PASSWORD='TestPass!2026' password-manager:latest`。冒烟脚本 `backend/offline/smoke_entry.py`（17 项断言）。
-- admin/TestPass!2026 是当前测试数据卷里的账号。
+- 冒烟脚本（**HTTP only 的可主机跑；含加密/import 的必须在容器内**）：`smoke_vault_export.py`（13 项：POST /unlock、批量导出 JSON/CSV、文件接口已移除、缺解密密码被拒）、`smoke_hybrid.py`（37 项：symmetric/gpg/sm2 混合加密 + needs_password）、`smoke_keyimport.py`（OrgKey 导入：含子密钥外部密钥 + 受口令私钥拒入）、`smoke_history_zh.py`（8 项：创建/修改后 history.comment 为中文）。`smoke_entry.py` 已陈旧（用旧 GET 路径）本轮跳过。
+- 主机运行示例（HTTP only）：`/Users/liuyupengliu/.workbuddy/binaries/python/versions/3.13.12/bin/python3 /Users/liuyupengliu/Downloads/projects/pwd-web-new/backend/offline/smoke_history_zh.py`。冒烟脚本内 `BASE` 默认 `http://localhost:9010`，运行时先 `sed -i.bak 's|http://localhost:9010|http://localhost:9012|' ...` 切到测试端口。
+- 测试容器：`docker run -d --name pwd-test --platform linux/amd64 -p 9012:9010 -v /tmp/pwd-test-data:/app/data -e ADMIN_PASSWORD='TestPass!2026' password-manager:latest`。
+- admin / TestPass!2026 是当前测试数据卷里的账号。
 
 ## 最近一次镜像
-- `password-manager:latest` ID `c17ac38fff99`（虚拟 216MB），tar `backend/offline/password_manager_image.tar` 约 222MB（2026-07-08 15:17 导出）。
-- 构建命令：`bash backend/offline/build_image.sh`（用户要求：每次更新都重建）。纯静态改动（如前端 JS）用 `docker commit` 增量更快：run 临时容器 → `docker cp` 改文件 → `docker stop` → `docker commit` → `docker save`，复用旧依赖层避开坑 #6 的 SIGKILL。
-- 本轮（2026-07-08）完成的 5 项需求：①取消文件保险箱页面（前端+后端模型/路由全删）；②编辑密码先弹锁框输入当前解密密码、解密回填后才能编辑；③新增密码需两次确认解密密码 + 明文显示按钮（`f-entry-reveal`）；④查看接口改 `POST /api/passwords/{id}/unlock`（密码在 body，不再用 `GET ?entry_password=`）；⑤新增批量导出 `POST /api/passwords/export`（JSON/CSV，加密备份或明文，解密密码在 body）。
-- 修正：删除 `app.js` 中重复的 `openExport` 函数定义（仅保留 626 行那一处，复用 `renderExportPerRow`）。
-- 验证：4 个冒烟脚本全绿 —— `smoke_entry` 18/18、`smoke_hybrid` 37/37、`smoke_keyimport` 全过、`smoke_vault_export` 13/13。
-- 历史镜像：`d619bdb8e4b5`（同轮 5 需求初版，含重复 openExport）、`167a9b7503ca`（GPG 子密钥修复）、`passwdpm:latest`（e5a8fca/4a9923c7/3827ea9e/7fa4e494/d613f4b29cef）已删除。
+- `password-manager:latest` ID `665100187af8`（virtual 463MB），tar `backend/offline/password_manager_image.tar` 141MB（2026-07-08 20:37 导出）。
+- 构建命令：`bash backend/offline/build_image.sh`（用户要求：每次更新都重建）。源码需完整替换时用 `docker commit` 增量：run `passwdpm:latest sleep 600` → `rm -rf /app/app` → `docker cp` 整套新代码 → `stop`（不删）→ `commit --change 'CMD ["python","run.py"]' --change 'EXPOSE 9010' --change 'VOLUME ["/app/data"]' ... password-manager:latest` → save。详见坑 #16、#17。
+- 本轮（2026-07-08 第二轮）完成的 5 项调整：①README 与代码同步（去文件保险箱描述，APIs、镜像体积）；②导出密码页排版美化（`.modal-card-export` + `.exp-summary` + `.seg-group` segmented pill + `.exp-row` 卡片）；③导出内容**只保留明文**（去掉 `cipher`/`exp-mode` 选项，后端永远 `plaintext: true`）；④密钥库顶部 `.section-hint` 信息卡 + `.key-toolbar` 工具栏分组；⑤修改记录全中文（后端 `passwords.py` 用中文 label + 前端 `humanizeComment` 兜底映射）。新冒烟 `smoke_history_zh.py` 8/8 通过。
+- 本轮之前的 5 项需求依然完整：①取消文件保险箱页面（前端+后端模型/路由全删）；②编辑密码先弹锁框输入当前解密密码、解密回填后才能编辑；③新增密码需两次确认解密密码 + 明文显示按钮（`f-entry-reveal`）；④查看接口改 `POST /api/passwords/{id}/unlock`（密码在 body，不再用 `GET ?entry_password=`）；⑤新增批量导出 `POST /api/passwords/export`（JSON/CSV。
+- 修正：删除 `app.js` 中重复的 `openExport` 函数定义（仅保留 626 行那一处，复用 `renderExportPerRow`）。本轮 `app.js` 又删了 `cipher`/`toggleExportPlain`、加 `syncMasterToPerRow` / `humanizeComment` / `HISTORY_FIELD_LABELS` / `HISTORY_ACTION_LABELS`。
+- 验证：3 + 1 + 1 冒烟脚本全绿 —— `smoke_vault_export` 13/13、`smoke_hybrid` 37/37、`smoke_keyimport` 容器内全过、新加 `smoke_history_zh` 8/8；`smoke_entry.py` 因仍是 stale 断言（用旧 GET 路径）本次跳过。
+- 历史镜像：`c17ac38fff99`（第一轮 5 需求的 tar 文件源镜像）、`d619bdb8e4b5`、`167a9b7503ca`、`passwdpm:latest`（e5a8fca/4a9923c7/3827ea9e/7fa4e494/d613f4b29cef）。
+
+## 前端样式系统（`backend/app/static/styles.css`）
+- 颜色 token（`--primary #2563eb` / `--danger #dc2626` / `--green #16a34a` / `--gpg #7c3aed` / `--sm2 #0891b2`）。
+- 关键组件：`.modal-card` / `.modal-card.wide` / `.modal-card-export` / `.btn .primary .ghost .danger .small`、`.badge .gpg .sm2 .entry`、`.kv .secret-box`、`.wait` 全屏等待 + `.spinner`、`.lock-box .lock-hint`、`.seg-group` segmented pill、`.section-hint` 信息卡（蓝紫渐变）、`.key-toolbar`（带边框卡片工具栏）、`.toolbar-group .flex-grow` 分组、`.exp-summary`（蓝色摘要块，大数字 + 标签）、`.exp-section / .exp-section-title` / `.exp-row .exp-row-info .exp-row-name .exp-row-algo`。
+- 前端缓存：`main.py` 用 `NoCacheStaticFiles(StaticFiles)` 子类在 `get_response` 加 `Cache-Control: no-cache, no-store, must-revalidate`（注意 `@app.middleware` 拦不到 mounted 子应用）。前端资源引用 URL 带 `?v=5` cache-buster，本轮升级到 `?v=6`。

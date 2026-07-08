@@ -9,7 +9,7 @@ import json
 import urllib.request
 import urllib.error
 
-BASE = "http://localhost:9012"
+BASE = "http://localhost:9010"
 ADMIN = "admin"
 ADMIN_PW = "TestPass!2026"
 
