@@ -1,0 +1,13 @@
+# 构建镜像时排除以下文件，避免把导出的镜像 tar / 测试脚本 / 本地 venv / 开发数据打进镜像或拖慢构建上下文
+offline/*.tar
+offline/smoke_entry.py
+offline/smoke_hybrid.py
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.workbuddy/
+.venv/
+data/
+.secret_key
+.smoke_*.py
