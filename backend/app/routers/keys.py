@@ -45,8 +45,9 @@ class ImportRequest(BaseModel):
     name: str
     algorithm: str  # 'gpg' | 'sm2'
     group_id: int
-    public_key: str = ""   # armored PEM（GPG）或 hex（SM2）
-    private_key: str = ""  # armored PEM（GPG）或 hex（SM2）
+    public_key: str = ""        # armored PEM（GPG）或 hex（SM2）
+    private_key: str = ""       # armored PEM（GPG）或 hex（SM2）
+    private_passphrase: str = ""  # GPG：受口令保护的私钥需要该口令；留空表示私钥未受保护
     comment: str = ""
 
 
@@ -70,8 +71,12 @@ def _fingerprint(algorithm: str, public_key: str) -> str:
     return pub[:16] or "?"
 
 
-def _validate_keys(algorithm: str, public_key: str, private_key: str = "") -> None:
-    """校验用户上传/粘贴的密钥格式是否可解析。失败抛 400。"""
+def _validate_keys(algorithm: str, public_key: str, private_key: str = "", private_passphrase: str = "") -> None:
+    """校验用户上传/粘贴的密钥格式是否可解析。失败抛 400。
+
+    对于 GPG 受口令保护的私钥，调用方必须同时传入 ``private_passphrase``；我们会用该口令
+    对私钥进行一次「decrypt-roundtrip」校验，确保口令正确可用。
+    """
     if algorithm not in ("gpg", "sm2"):
         raise HTTPException(status_code=400, detail=f"不支持的算法: {algorithm}")
     if not public_key:
@@ -83,9 +88,13 @@ def _validate_keys(algorithm: str, public_key: str, private_key: str = "") -> No
         raise HTTPException(status_code=400, detail=f"公钥格式无效：{e}") from e
     if private_key:
         try:
-            provider.decrypt(provider.encrypt("密码管理-test-roundtrip", public_key), private_key)
+            provider.decrypt(
+                provider.encrypt("密码管理-test-roundtrip", public_key),
+                private_key,
+                passphrase=private_passphrase or None,
+            )
         except ValueError as e:
-            # 受口令保护等“明确错误”，直接透传清晰文案，避免被笼统的“不匹配”掩盖
+            # 受口令保护 / 口令为空等「明确错误」，直接透传清晰文案，避免被笼统的“不匹配”掩盖
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"私钥与公钥不匹配或无效：{e}") from e
@@ -140,6 +149,7 @@ def list_orgkeys(
             "group_id": r.group_id,
             "fingerprint": r.fingerprint,
             "has_private": r.has_private,
+            "private_protected": bool(r.private_protected),
             "created_by": r.created_by,
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "updated_at": r.updated_at.isoformat() if r.updated_at else None,
@@ -166,11 +176,13 @@ def generate_orgkey(req: GenerateRequest, db: Session = Depends(get_db), user: U
         private_key=priv,
         fingerprint=fp,
         has_private=True,
+        private_protected=False,  # 服务端自生成密钥不带口令
+        is_protected=False,        # 老库兼容性
         created_by=user.username,
     )
     db.add(rec)
     db.commit()
-    return {"id": rec.id, "fingerprint": fp, "algorithm": rec.algorithm, "has_private": rec.has_private}
+    return {"id": rec.id, "fingerprint": fp, "algorithm": rec.algorithm, "has_private": rec.has_private, "private_protected": False}
 
 
 @orgkeys_router.post("/import")
@@ -179,7 +191,9 @@ def import_orgkey(req: ImportRequest, db: Session = Depends(get_db), user: User 
         raise HTTPException(status_code=400, detail="请输入密钥名称")
     ensure_group_access(db, user, req.group_id)
     has_priv = bool(req.private_key.strip())
-    _validate_keys(req.algorithm, req.public_key, req.private_key)
+    pp = (req.private_passphrase or "").strip()
+    # 即使没填 passphrase，也要先校验一遍（pgpy 会自动检测并报清晰错误）
+    _validate_keys(req.algorithm, req.public_key, req.private_key, pp)
     fp = _fingerprint(req.algorithm, req.public_key)
     rec = OrgKey(
         group_id=req.group_id,
@@ -189,11 +203,21 @@ def import_orgkey(req: ImportRequest, db: Session = Depends(get_db), user: User 
         private_key=req.private_key.strip() if has_priv else None,
         fingerprint=fp,
         has_private=has_priv,
+        private_protected=bool(pp),
+        private_passphrase=pp,
+        # 老库的 legacy ``is_protected`` 列无默认值（pgen 未设置 → NOT NULL 失败），
+        # 这里显式给定一个与 ``private_protected`` 一致的值，保证各版本库都能写入。
+        is_protected=bool(pp),
         created_by=user.username,
     )
     db.add(rec)
     db.commit()
-    return {"id": rec.id, "fingerprint": fp, "has_private": has_priv}
+    return {
+        "id": rec.id,
+        "fingerprint": fp,
+        "has_private": has_priv,
+        "private_protected": rec.private_protected,
+    }
 
 
 @orgkeys_router.get("/{kid}/export")

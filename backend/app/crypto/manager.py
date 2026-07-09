@@ -37,12 +37,27 @@ def encrypt_secret(db, algorithm: str, plaintext: str) -> str:
 
 
 def decrypt_secret(db, algorithm: str, ciphertext: str) -> str:
+    """用服务端密钥解密。passphrase 不需要（服务端默认密钥不带口令）。"""
     from ..models import KeyRecord
 
     rec = db.query(KeyRecord).filter_by(algorithm=algorithm).first()
     if rec is None:
         raise RuntimeError(f"缺少 {algorithm} 算法密钥")
     return PROVIDERS[algorithm].decrypt(ciphertext, rec.private_key)
+
+
+def decrypt_with_orgkey(db, orgkey_id: int, ciphertext: str, passphrase: str = None) -> str:
+    """用指定的 OrgKey 私钥解密（密码条目 legacy 方案）。若该 OrgKey 私钥受保护，
+    需传入 OrgKey 保存的口令 ``passphrase``。"""
+    from ..models import OrgKey
+
+    rec = db.query(OrgKey).filter_by(id=orgkey_id).first()
+    if rec is None:
+        raise RuntimeError(f"找不到 OrgKey #{orgkey_id}")
+    if not rec.private_key:
+        raise RuntimeError(f"OrgKey #{orgkey_id} 未持有私钥")
+    pp = passphrase if passphrase is not None else rec.private_passphrase
+    return PROVIDERS[rec.algorithm].decrypt(ciphertext, rec.private_key, passphrase=pp)
 
 
 def encrypt_file(db, algorithm: str, data: bytes) -> bytes:

@@ -1,5 +1,100 @@
 "use strict";
 
+/* ────────── SM3 哈希（SCRAM-SM3 与密码锁都依赖此实现）────────── */
+
+// left-rotate for 32-bit unsigned value (掩码强制无符号，避免 JS << 负值问题)
+function _rotl32(x, n) {
+  x = (x >>> 0);
+  n = n % 32;
+  return (((x << n) | (x >>> (32 - n))) >>> 0);
+}
+function _sm3P0(x) { return ((x ^ _rotl32(x, 9) ^ _rotl32(x, 17)) >>> 0); }
+function _sm3P1(x) { return ((x ^ _rotl32(x, 15) ^ _rotl32(x, 23)) >>> 0); }
+function _sm3FF(j, x, y, z) {
+  if (j < 16) return ((x ^ y ^ z) >>> 0);
+  return ((((x & y) | (x & z) | (y & z)) >>> 0));
+}
+function _sm3GG(j, x, y, z) {
+  if (j < 16) return ((x ^ y ^ z) >>> 0);
+  return (((x & y | ((~x) >>> 0) & z)) >>> 0);
+}
+function _sm3Tj(j) { return j < 16 ? 0x79cc4519 : 0x7a879d8a; }  // GM/T 0003-2012 标准常量
+
+function _sm3compress(v, block) {
+  const W = new Array(68);
+  for (let i = 0; i < 16; i++) {
+    W[i] = ((block[i*4] << 24) | (block[i*4+1] << 16) | (block[i*4+2] << 8) | block[i*4+3]) >>> 0;
+  }
+  for (let i = 16; i < 68; i++) {
+    W[i] = (_sm3P1(((W[i-16] ^ W[i-9] ^ _rotl32(W[i-3], 15)) >>> 0))
+            ^ _rotl32(W[i-13], 7) ^ W[i-6]) >>> 0;
+  }
+  const Wp = new Array(64);
+  for (let i = 0; i < 64; i++) Wp[i] = ((W[i] ^ W[i+4]) >>> 0);
+
+  let A = v[0]>>>0, B = v[1]>>>0, C = v[2]>>>0, D = v[3]>>>0;
+  let E = v[4]>>>0, F = v[5]>>>0, G = v[6]>>>0, H = v[7]>>>0;
+  for (let j = 0; j < 64; j++) {
+    const A12 = _rotl32(A, 12);
+    const SS1 = _rotl32(((A12 + E + _rotl32(_sm3Tj(j), j % 32)) >>> 0), 7);
+    const SS2 = ((SS1 ^ A12) >>> 0);
+    const TT1 = ((_sm3FF(j, A, B, C) + D + SS2 + Wp[j]) >>> 0);
+    const TT2 = ((_sm3GG(j, E, F, G) + H + SS1 + W[j]) >>> 0);
+    D = C; C = _rotl32(B, 9); B = A; A = TT1;
+    H = G; G = _rotl32(F, 19); F = E; E = _sm3P0(TT2);
+  }
+  v[0] = ((v[0] ^ A) >>> 0); v[1] = ((v[1] ^ B) >>> 0);
+  v[2] = ((v[2] ^ C) >>> 0); v[3] = ((v[3] ^ D) >>> 0);
+  v[4] = ((v[4] ^ E) >>> 0); v[5] = ((v[5] ^ F) >>> 0);
+  v[6] = ((v[6] ^ G) >>> 0); v[7] = ((v[7] ^ H) >>> 0);
+}
+
+const _SM3_IV = [0x7380166f, 0x4914b2b9, 0x172442d7, 0xda8a0600,
+                 0xa96f30bc, 0x163138aa, 0xe38dee4d, 0xb0fb0e4e];
+
+/** 对 Uint8Array 跑 SM3，返回 32 字节的 Uint8Array。 */
+function sm3Bytes(bytes) {
+  const len = bytes.length;
+  const bufLen = (((len + 1 + 8 + 63) >> 6) << 6);
+  const buf = new Uint8Array(bufLen);
+  buf.set(bytes);
+  buf[len] = 0x80;
+  let bitLen = BigInt(len) * 8n;
+  for (let i = 0; i < 8; i++) {
+    buf[bufLen - 1 - i] = Number(bitLen & 0xffn);
+    bitLen >>= 8n;
+  }
+  const v = _SM3_IV.slice();
+  for (let off = 0; off < bufLen; off += 64) {
+    _sm3compress(v, buf.subarray(off, off + 64));
+  }
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 8; i++) {
+    out[i*4]   = (v[i] >>> 24) & 0xff;
+    out[i*4+1] = (v[i] >>> 16) & 0xff;
+    out[i*4+2] = (v[i] >>> 8) & 0xff;
+    out[i*4+3] = v[i] & 0xff;
+  }
+  return out;
+}
+
+/** 对 string（UTF-8）跑 SM3，返回 hex 字符串。 */
+function sm3Hex(s) {
+  const bytes = new TextEncoder().encode(s || "");
+  return Array.from(sm3Bytes(bytes), b => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** hex 字符串 → Uint8Array（辅助函数：把后端返回的 salt/nonce/verifier 字符串转回字节）。 */
+function hexToBytes(hex) {
+  const n = (hex || "").length;
+  if (n % 2 !== 0) return new Uint8Array(0);
+  const out = new Uint8Array(n / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.substr(i * 2, 2), 16) || 0;
+  }
+  return out;
+}
+
 const TOKEN_KEY = "password_manager_token";
 const USER_KEY = "password_manager_user";
 
@@ -91,24 +186,71 @@ function isAuthErr(e) {
   return String((e && e.message) || "").includes("401") || String((e && e.message) || "").includes("令牌");
 }
 
-/* ---------- 登录 / 登出 ---------- */
+/* ---------- 登录 / 登出 ----------
+ * 登录走「SCRAM-SM3 挑战-响应」：不再以明文密码传输。
+ *   1) POST /api/auth/login/begin {username} → {salt, nonce, iter, mode}
+ *      - salt 来自服务端持久化（前后端共用）
+ *      - nonce 是本次会话一次性随机数（防重放）
+ *   2) 前端计算 verifier = SM3(password || salt_bytes) → proof = SM3(verifier || nonce_bytes)
+ *   3) POST /api/auth/login/verify {username, nonce, proof} → {access_token}
+ * 对历史未迁移的账号（后端 pw_verifier 仍为空），后端会返回 409，
+ * 此时前端自动回退到旧路径 /api/auth/login {username, password}（明文 POST）做一次性迁移。
+ */
 async function doLogin(e) {
   e.preventDefault();
   $("login-error").textContent = "";
+  const username = ($("login-username").value || "").trim();
+  const password = $("login-password").value || "";
+  if (!username || !password) {
+    $("login-error").textContent = "请输入用户名和密码";
+    return;
+  }
   try {
-    const data = await api("/api/auth/login", {
+    let chal;
+    try {
+      chal = await api("/api/auth/login/begin", {
+        method: "POST",
+        body: JSON.stringify({ username }),
+      });
+    } catch (err) {
+      // 409: 旧账号尚未迁移 → 走明文 /login 完成一次性迁移
+      if (String(err.message).includes("409")) {
+        const data = await api("/api/auth/login", {
+          method: "POST",
+          body: JSON.stringify({ username, password }),
+        });
+        state.token = data.access_token;
+        localStorage.setItem(TOKEN_KEY, state.token);
+        await refreshMe();
+        enterApp();
+        return;
+      }
+      throw err;
+    }
+    // SCRAM-SM3: T = SM3(password || salt) ; proof = SM3(T || nonce)
+    const saltBytes = hexToBytes(chal.salt);
+    const nonceBytes = hexToBytes(chal.nonce);
+    const pwBytes = new TextEncoder().encode(password);
+    const tInput = new Uint8Array(pwBytes.length + saltBytes.length);
+    tInput.set(pwBytes, 0);
+    tInput.set(saltBytes, pwBytes.length);
+    const verifierBytes = sm3Bytes(tInput);     // T（与服务端 pw_verifier 同值）
+    const proofInput = new Uint8Array(verifierBytes.length + nonceBytes.length);
+    proofInput.set(verifierBytes, 0);
+    proofInput.set(nonceBytes, verifierBytes.length);
+    const proofBytes = sm3Bytes(proofInput);     // proof = SM3(T || nonce)
+    const proofHex = Array.from(proofBytes, b => b.toString(16).padStart(2, "0")).join("");
+
+    const data = await api("/api/auth/login/verify", {
       method: "POST",
-      body: JSON.stringify({
-        username: $("login-username").value,
-        password: $("login-password").value,
-      }),
+      body: JSON.stringify({ username, nonce: chal.nonce, proof: proofHex }),
     });
     state.token = data.access_token;
     localStorage.setItem(TOKEN_KEY, state.token);
     await refreshMe();
     enterApp();
   } catch (err) {
-    $("login-error").textContent = err.message;
+    $("login-error").textContent = err.message || "登录失败";
   }
 }
 
@@ -327,13 +469,21 @@ function toggleEntryReveal() {
 }
 
 /* ---------- 表单弹窗（新增 / 编辑） ---------- */
-// 编辑模式锁框可见时，下方表单 + 操作按钮统一置灰；取消按钮始终可用
+// 编辑模式下「未拿到结果（未成功解密）」时，编辑页面除「取消」外的所有控件都置灰：
+// 包括锁框内的「解密并继续」按钮和锁框密码输入，以及下方表单的所有字段。
+// 只保留「取消」一个逃生出口。
 const FORM_EDIT_LOCKED_IDS = [
+  // 锁框
+  "form-lock-password", "form-unlock",
+  // 表单字段
   "f-username", "f-algorithm",
   "f-entry-password", "f-entry-password-confirm", "f-new-entry-password",
   "f-orgkey", "f-group", "f-secret",
+  // 表单内联按钮
   "f-reveal", "f-gen", "f-entry-reveal",
+  // 备注 / 说明
   "f-notes", "f-comment",
+  // 主操作按钮
   "form-save",
 ];
 function setFormEditLocked(locked) {
@@ -341,7 +491,7 @@ function setFormEditLocked(locked) {
     const el = document.getElementById(id);
     if (el) el.disabled = !!locked;
   }
-  // 取消按钮永远可用（让用户能退出）
+  // 取消按钮永远可用（让用户能退出当前编辑）
   const cancel = document.getElementById("form-cancel");
   if (cancel) cancel.disabled = false;
 }
@@ -879,10 +1029,27 @@ function openKeyImport() {
   fillGroupSelect("ki-group", state.isAdmin ? null : state.groups[0].id);
   $("ki-pub").value = "";
   $("ki-priv").value = "";
+  $("ki-passphrase").value = "";
+  $("ki-passphrase").type = "password";
+  $("ki-passphrase-reveal").textContent = "显示";
+  // 默认只有用户填了私钥时才显示口令行；切换算法也会重置显示
+  applyImportPassphraseUI(algorithm);
   $("ki-error").textContent = "";
   $("keyimport-modal").classList.remove("hidden");
   $("ki-name").focus();
 }
+
+function applyImportPassphraseUI(algorithm) {
+  // 仅 GPG 私钥可能带口令；SM2 自生成的密钥本身无口令。
+  // UI 显示规则：只要用户在「私钥」框里粘贴了内容，就把口令行展开供选择填写。
+  const hasPriv = ($("ki-priv") && $("ki-priv").value.trim().length) > 0;
+  const show = algorithm === "gpg" && hasPriv;
+  ["ki-passphrase-label", "ki-passphrase-row"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle("hidden", !show);
+  });
+}
+
 function closeKeyImport() { $("keyimport-modal").classList.add("hidden"); }
 
 async function saveKeyImport() {
@@ -892,6 +1059,7 @@ async function saveKeyImport() {
   const groupId = Number($("ki-group").value);
   const publicKey = $("ki-pub").value;
   const privateKey = $("ki-priv").value;
+  const privatePassphrase = $("ki-passphrase").value;
   if (!name) return ($("ki-error").textContent = "请输入密钥名称");
   if (!publicKey) return ($("ki-error").textContent = "请粘贴公钥内容");
   if (!groupId) return ($("ki-error").textContent = "请选择所属分组");
@@ -902,6 +1070,7 @@ async function saveKeyImport() {
       body: JSON.stringify({
         name, algorithm, group_id: groupId,
         public_key: publicKey, private_key: privateKey,
+        private_passphrase: privatePassphrase || "",
       }),
     });
     showToast(privateKey ? "已导入公钥 + 私钥" : "已导入公钥（无私钥）");
@@ -1258,6 +1427,22 @@ function bind() {
   $("group-cancel").addEventListener("click", () => $("group-modal").classList.add("hidden"));
   $("group-save").addEventListener("click", saveGroup);
 
+  // 批量新增用户（点「批量新增」按钮 → 弹窗 → 选文件 → 点「开始导入」）
+  $("batch-user-btn").addEventListener("click", openUserBatch);
+  $("user-batch-cancel").addEventListener("click", closeUserBatch);
+  $("user-batch-go").addEventListener("click", doUserBatchUpload);
+  $("user-batch-file").addEventListener("change", (ev) => {
+    $("user-batch-go").disabled = !(ev.target.files && ev.target.files.length > 0);
+    // 重置之前的回执，避免重复显示上一份的结果
+    $("user-batch-summary").classList.add("hidden");
+    $("user-batch-results").classList.add("hidden");
+    $("user-batch-results").innerHTML = "";
+    $("user-batch-error").textContent = "";
+  });
+  // 模板下载：用 fetch + blob 把后端响应落盘（保留 Bearer token），并指定浏览器默认文件名
+  $("user-batch-tpl-xlsx").addEventListener("click", () => downloadUserTemplate("xlsx"));
+  $("user-batch-tpl-csv").addEventListener("click", () => downloadUserTemplate("csv"));
+
   // 密钥库
   $("key-gen-btn").addEventListener("click", openKeyGen);
   $("kg-cancel").addEventListener("click", closeKeyGen);
@@ -1265,6 +1450,15 @@ function bind() {
   $("key-import-btn").addEventListener("click", openKeyImport);
   $("ki-cancel").addEventListener("click", closeKeyImport);
   $("ki-save").addEventListener("click", saveKeyImport);
+  // 导入密钥的「私钥口令」只在 GPG + 用户填了私钥时才出现；监听私钥框 / 算法切换
+  $("ki-algorithm").addEventListener("change", () => applyImportPassphraseUI($("ki-algorithm").value));
+  $("ki-priv").addEventListener("input", () => applyImportPassphraseUI($("ki-algorithm").value));
+  $("ki-passphrase-reveal").addEventListener("click", () => {
+    const inp = $("ki-passphrase");
+    const show = inp.type === "password";
+    inp.type = show ? "text" : "password";
+    $("ki-passphrase-reveal").textContent = show ? "隐藏" : "显示";
+  });
   $("key-group-filter").addEventListener("change", renderKeyTable);
   $("key-search").addEventListener("input", renderKeyTable);
   $("key-tbody").addEventListener("click", (ev) => {
@@ -1295,6 +1489,107 @@ function bind() {
   document.querySelectorAll(".modal").forEach((m) => {
     m.addEventListener("click", (e) => { if (e.target === m) m.classList.add("hidden"); });
   });
+}
+
+async function downloadUserTemplate(fmt) {
+  try {
+    const resp = await fetch(`/api/admin/users/template?fmt=${fmt}`, {
+      headers: { Authorization: "Bearer " + state.token },
+    });
+    if (!resp.ok) throw new Error("模板下载失败 (" + resp.status + ")");
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `用户批量导入模板.${fmt}`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+  } catch (e) {
+    showError(e.message || "下载模板失败");
+  }
+}
+
+/* ---------- 批量新增用户 ---------- */
+function openUserBatch() {
+  $("user-batch-file").value = "";     // 重置文件选择器，确保重复上传同一文件时能触发 change
+  $("user-batch-summary").classList.add("hidden");
+  $("user-batch-results").classList.add("hidden");
+  $("user-batch-results").innerHTML = "";
+  $("user-batch-error").textContent = "";
+  $("user-batch-go").disabled = true;
+  $("user-batch-modal").classList.remove("hidden");
+}
+
+function closeUserBatch() { $("user-batch-modal").classList.add("hidden"); }
+
+async function doUserBatchUpload() {
+  const f = $("user-batch-file").files[0];
+  if (!f) {
+    $("user-batch-error").textContent = "请先选择一个 .xlsx 或 .csv 文件";
+    return;
+  }
+  $("user-batch-error").textContent = "";
+  showWait("正在解析并批量新增用户…");
+  try {
+    const fd = new FormData();
+    fd.append("file", f, f.name);
+    const resp = await fetch("/api/admin/users/batch", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + state.token },
+      body: fd,
+    });
+    let body = null;
+    try { body = await resp.json(); } catch (_) { /* not json */ }
+    if (!resp.ok) {
+      throw new Error((body && (body.detail || body.message)) || ("上传失败 (" + resp.status + ")"));
+    }
+    renderUserBatchResult(body || {});
+    if (body && (body.created || body.errored)) {
+      loadAdminUsers().catch(() => {});
+    }
+  } catch (e) {
+    $("user-batch-error").textContent = e.message || String(e);
+    showError($("user-batch-error").textContent);
+  } finally {
+    hideWait();
+  }
+}
+
+function renderUserBatchResult(data) {
+  // 摘要
+  $("user-batch-total").textContent = data.total || 0;
+  $("user-batch-created").textContent = data.created || 0;
+  $("user-batch-skipped").textContent = data.skipped || 0;
+  $("user-batch-errored").textContent = data.errored || 0;
+  $("user-batch-summary").classList.remove("hidden");
+
+  // 详细回执表
+  const rows = (data.rows || []).map((r) => {
+    const cls = r.status === "created" ? "exp-pill-ok"
+                : r.status === "skipped" ? "exp-pill-warn"
+                : "exp-pill-err";
+    const label = r.status === "created" ? "✓ 成功"
+                : r.status === "skipped" ? "⚠ 跳过"
+                : "✗ 失败";
+    return `<tr>
+      <td style="padding:4px 8px;color:#6b7280">${r.row}</td>
+      <td style="padding:4px 8px"><code>${esc(r.username || "(空)")}</code></td>
+      <td style="padding:4px 8px"><span class="exp-pill ${cls}">${label}</span></td>
+      <td style="padding:4px 8px;color:#4b5563">${esc(r.message || "")}</td>
+    </tr>`;
+  }).join("");
+  const table = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="background:#f9fafb;color:#6b7280">
+      <th style="padding:6px 8px;text-align:left;width:48px">行</th>
+      <th style="padding:6px 8px;text-align:left">用户名</th>
+      <th style="padding:6px 8px;text-align:left;width:88px">状态</th>
+      <th style="padding:6px 8px;text-align:left">说明</th>
+    </tr></thead>
+    <tbody>${rows || '<tr><td colspan="4" style="padding:12px;text-align:center;color:#9ca3af">没有可显示的行</td></tr>'}</tbody>
+  </table>`;
+  $("user-batch-results").innerHTML = table;
+  $("user-batch-results").classList.remove("hidden");
 }
 
 /* ---------- 启动 ---------- */

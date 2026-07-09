@@ -9,3 +9,4 @@ bcrypt==4.0.1          # passlib 1.7.4 与 bcrypt>=4.1 不兼容，必须固定
 PyJWT==2.13.0
 SQLAlchemy==2.0.51
 python-dotenv==1.2.2
+openpyxl==3.1.5          # 用户批量新增：xlsx 模板下载与解析（兼容到 3.x，最新 3.1 系列）

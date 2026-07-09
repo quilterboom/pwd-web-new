@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>密码管理</title>
-  <link rel="stylesheet" href="/styles.css?v=5" />
+  <link rel="stylesheet" href="/styles.css?v=6" />
 </head>
 <body>
   <!-- 登录页 -->
@@ -42,13 +42,13 @@
         <div class="toolbar key-toolbar">
           <div class="toolbar-group">
             <label class="checkbox-inline"><input type="checkbox" id="select-all" /> 全选</label>
-            <button id="export-btn" class="btn ghost" disabled>📤 导出</button>
+            <button id="export-btn" class="btn ghost" disabled title="批量导出所选密码">📤 导出</button>
           </div>
           <div class="toolbar-group flex-grow">
             <input id="search-input" type="text" placeholder="搜索账号…" />
           </div>
-          <div class="toolbar-group">
-            <button id="add-btn" class="btn primary">＋ 新增密码</button>
+          <div class="toolbar-group toolbar-actions">
+            <button id="add-btn" class="btn primary" title="新增一条密码">＋ 新增</button>
           </div>
         </div>
         <div id="keys-status" class="keys-status"></div>
@@ -82,9 +82,9 @@
           <div class="toolbar-group flex-grow">
             <input id="key-search" type="text" placeholder="搜索密钥名 / 创建人…" />
           </div>
-          <div class="toolbar-group">
-            <button id="key-import-btn" class="btn ghost">⬆️ 导入密钥</button>
-            <button id="key-gen-btn" class="btn primary">＋ 生成密钥</button>
+          <div class="toolbar-group toolbar-actions">
+            <button id="key-import-btn" class="btn ghost" title="导入外部密钥（PEM / armored）">📥 导入</button>
+            <button id="key-gen-btn" class="btn primary" title="生成新的 GPG / SM2 密钥对">🛠 生成</button>
           </div>
         </div>
         <table class="pw-table">
@@ -212,9 +212,11 @@
       </nav>
 
       <section id="admin-users-sec">
-        <div class="toolbar">
-          <div class="spacer"></div>
-          <button id="add-user-btn" class="btn primary">＋ 新增用户</button>
+        <div class="toolbar key-toolbar">
+          <div class="toolbar-group toolbar-actions">
+            <button id="batch-user-btn" class="btn ghost" title="通过 Excel / CSV 模板批量导入用户">📥 批量新增</button>
+            <button id="add-user-btn" class="btn primary" title="逐一新增用户">＋ 新增用户</button>
+          </div>
         </div>
         <table class="pw-table">
           <thead>
@@ -373,12 +375,57 @@
       <textarea id="ki-pub" rows="6" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----&#10;…或 SM2 公钥字符串"></textarea>
       <label>私钥 <span class="hint">可选；只导入公钥也可</span></label>
       <textarea id="ki-priv" rows="6" placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----&#10;…或 SM2 私钥字符串"></textarea>
-      <p class="hint" style="margin-top:6px">注意：暂不支持导入<b>受口令保护</b>的私钥。若 GnuPG 导出时设置了口令，请先 <code>gpg --pinentry-mode loopback --passwd &lt;KEYID&gt;</code> 将口令清空再导出。</p>
+      <label id="ki-passphrase-label" class="hidden">GPG 私钥口令 <span class="hint">受 passphrase 保护的私钥必填；未保护则留空</span></label>
+      <div id="ki-passphrase-row" class="secret-row hidden">
+        <input id="ki-passphrase" type="password" autocomplete="off" placeholder="输入该 GPG 私钥的口令" />
+        <button type="button" id="ki-passphrase-reveal" class="btn ghost small">显示</button>
+      </div>
+      <p class="hint" style="margin-top:6px">提示：私钥本身是否受口令保护由 <code>gpg --list-packets</code> 或 <code>pgpdump</code> 查看 <code>protect</code> 字段。
+        本系统会保留该口令以便后续解密 / 签名使用；口令会与服务端其它数据一起持久化（admin 可见）。</p>
       <div class="modal-actions">
         <button id="ki-cancel" class="btn ghost">取消</button>
         <button id="ki-save" class="btn primary">导入</button>
       </div>
       <div id="ki-error" class="error"></div>
+    </div>
+  </div>
+
+  <!-- 批量新增用户 -->
+  <div id="user-batch-modal" class="modal hidden">
+    <div class="modal-card modal-card-wide">
+      <div class="modal-head">
+        <h2>📥 批量新增用户</h2>
+        <p class="modal-sub">下载 Excel 或 CSV 模板 → 填写后上传，支持部分失败回执。</p>
+      </div>
+      <div class="exp-section">
+        <div class="exp-section-title">下载模板</div>
+        <div class="seg-group" role="radiogroup" aria-label="模板格式">
+          <button type="button" id="user-batch-tpl-xlsx" class="seg-opt seg-link">📄 Excel (.xlsx)</button>
+          <button type="button" id="user-batch-tpl-csv" class="seg-opt seg-link">📊 CSV (.csv)</button>
+        </div>
+        <div class="hint" style="margin-top:8px;color:#6b7280;font-size:12px;line-height:1.6">
+          模板内含「用户名 / 密码 / 是否管理员 / 所属分组」四列：多条「所属分组」用半角逗号分隔；管理员可不绑定分组。示例可保留也可整行删除。
+        </div>
+      </div>
+      <div class="exp-section">
+        <div class="exp-section-title">上传文件</div>
+        <input id="user-batch-file" type="file" accept=".xlsx,.csv" />
+      </div>
+      <div id="user-batch-summary" class="exp-summary hidden">
+        <div class="exp-summary-num"><b id="user-batch-total">0</b></div>
+        <div class="exp-summary-label">已处理行数</div>
+        <div class="exp-summary-meta">
+          <span class="exp-pill exp-pill-ok">✓ 成功 <b id="user-batch-created">0</b></span>
+          <span class="exp-pill exp-pill-warn">⚠ 跳过 <b id="user-batch-skipped">0</b></span>
+          <span class="exp-pill exp-pill-err">✗ 失败 <b id="user-batch-errored">0</b></span>
+        </div>
+      </div>
+      <div id="user-batch-results" class="hidden" style="max-height:240px;overflow:auto;border:1px solid #e5e7eb;border-radius:6px"></div>
+      <div id="user-batch-error" class="error"></div>
+      <div class="modal-actions">
+        <button id="user-batch-cancel" class="btn ghost">关闭</button>
+        <button id="user-batch-go" class="btn primary" disabled>开始导入</button>
+      </div>
     </div>
   </div>
 
@@ -390,6 +437,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=5"></script>
+  <script src="/app.js?v=6"></script>
 </body>
 </html>

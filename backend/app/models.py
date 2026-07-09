@@ -25,6 +25,11 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     username = Column(String(64), unique=True, nullable=False, index=True)
     hashed_password = Column(String(255), nullable=False)
+    # 新方案：SCRAM-SM3 风格「挑战-响应」凭据。
+    # pw_salt     : 16 字节随机盐（hex）；pw_verifier : SM3(password || pw_salt)（hex）
+    # 为空表示用户仍是 legacy 模式（旧密码登录时一次性自动迁移到新方案）。
+    pw_salt = Column(String(64), default="")
+    pw_verifier = Column(String(128), default="")
     is_admin = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=_utcnow)
 
@@ -73,6 +78,15 @@ class OrgKey(Base):
     private_key = Column(Text, nullable=True)
     fingerprint = Column(String(64), default="")  # 指纹/标识，方便识别密钥
     has_private = Column(Boolean, nullable=False, default=False)  # 是否存有私钥（便于前端显示）
+    # 私钥口令保护（GPG 私钥可能受 passphrase 保护）。
+    # private_protected   : True 表示该私钥在导入时本身已带口令（用 passphrase 解锁才能解密 / 签名）
+    # private_passphrase  : 口令本身（受保护的私钥在导入时已要求用户填写并与服务端数据一起保存；
+    #                       后续所有解锁 / 签名 / 解密都使用这个口令）。为空表示私钥未受保护。
+    private_protected = Column(Boolean, nullable=False, default=False)
+    private_passphrase = Column(String(255), default="")
+    # 历史遗留列：老版本库里 ``is_protected`` 用于 pgpy 私钥 password 保护（无口令时也置 true 是错的），
+    # 仅仅为了不破坏老库的 NOT NULL 约束。真实判定请使用 ``private_protected``。
+    is_protected = Column(Boolean, nullable=False, default=False)
     created_by = Column(String(64), default="")
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)

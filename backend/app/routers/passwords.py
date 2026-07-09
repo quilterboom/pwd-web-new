@@ -166,18 +166,25 @@ def _legacy_decrypt(db: Session, e: PasswordEntry) -> str:
     """解开 legacy 外层（GPG/SM2），返回内层原文。
 
     hybrid 条目下内层是 JSON 字符串（{salt,iv,ciphertext}）；旧式纯 legacy 下内层即明文。
+
+    支持「受口令保护的 OrgKey 私钥」：解密时会使用 OrgKey.private_passphrase 自动解锁。
     """
     if e.orgkey_id:
-        k = db.query(OrgKey).filter_by(id=e.orgkey_id).first()
-        if k and k.private_key:
-            try:
-                return manager.get_provider(e.algorithm).decrypt(e.ciphertext, k.private_key)
-            except Exception as ex:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"用 OrgKey 私钥解密失败：{ex}",
-                ) from ex
-        # 若 OrgKey 已不存在或无私钥，回退到服务端默认密钥
+        try:
+            return manager.decrypt_with_orgkey(db, e.orgkey_id, e.ciphertext)
+        except RuntimeError:
+            # 指定的 OrgKey 不存在或未持有私钥 → 回退到服务端默认密钥
+            pass
+        except ValueError as ex:
+            raise HTTPException(
+                status_code=500,
+                detail=f"用 OrgKey 私钥解密失败（缺少该密钥的口令）：{ex}",
+            ) from ex
+        except Exception as ex:
+            raise HTTPException(
+                status_code=500,
+                detail=f"用 OrgKey 私钥解密失败：{ex}",
+            ) from ex
     return manager.decrypt_secret(db, e.algorithm, e.ciphertext)
 
 

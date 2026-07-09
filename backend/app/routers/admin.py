@@ -18,7 +18,7 @@ from ..core.deps import (
 )
 from ..db import get_db
 from ..models import Group, PasswordEntry, User, user_groups
-from ..security import hash_password
+from ..security import derive_password_verifier, hash_password
 
 # ---------------- 当前用户可见分组（非管理员接口） ----------------
 mine_router = APIRouter(tags=["groups"])
@@ -93,6 +93,16 @@ def list_users(
     ]
 
 
+def _seed_login_material(user: User, password: str) -> None:
+    """给新创建 / 重置密码的用户同时写入 SCRAM-SM3 凭据（盐 + 验证器）。
+    这样新用户从一开始就走「加密登录」路径——明文密码只在管理员表单里短暂出现一次。
+    """
+    import secrets
+    salt = secrets.token_bytes(16).hex()
+    user.pw_salt = salt
+    user.pw_verifier = derive_password_verifier(password, salt)
+
+
 @users_router.post("")
 def create_user(
     req: UserCreate,
@@ -109,6 +119,8 @@ def create_user(
         hashed_password=hash_password(req.password),
         is_admin=req.is_admin,
     )
+    # 同时写入 SCRAM-SM3 凭据，便于新用户启用加密登录
+    _seed_login_material(user, req.password)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -135,6 +147,8 @@ def update_user(
 
     if req.password:
         user.hashed_password = hash_password(req.password)
+        # 重置密码时同步更新 SCRAM-SM3 凭据；如未迁移，下一次登录即可走加密路径
+        _seed_login_material(user, req.password)
     if req.is_admin is not None:
         user.is_admin = req.is_admin
 

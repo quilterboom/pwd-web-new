@@ -36,17 +36,26 @@ def _migrate_columns():
     alterations = [
         ("users", "is_admin", "INTEGER NOT NULL DEFAULT 0"),
         ("passwords", "group_id", "INTEGER"),
-        ("file_vault", "group_id", "INTEGER"),
         ("history", "group_id", "INTEGER"),
-        ("file_history", "group_id", "INTEGER"),
         # 条目级密码加密（每条密码用自己的密码对称加密）
         ("passwords", "scheme", "VARCHAR(16) DEFAULT 'legacy'"),
         ("passwords", "entry_salt", "VARCHAR(64) DEFAULT ''"),
         ("passwords", "entry_iv", "VARCHAR(64) DEFAULT ''"),
         # legacy 方案可选指定 OrgKey（按组织持有密钥对加密，而不是服务端默认密钥）
         ("passwords", "orgkey_id", "INTEGER"),
+        # SCRAM-SM3 登录凭据：用户登录时不再以明文传递密码
+        ("users", "pw_salt", "VARCHAR(64) DEFAULT ''"),
+        ("users", "pw_verifier", "VARCHAR(128) DEFAULT ''"),
+        # GPG 私钥口令支持：私钥可能受 passphrase 保护；导入时一起保存
+        ("org_keys", "private_protected", "INTEGER NOT NULL DEFAULT 0"),
+        ("org_keys", "private_passphrase", "VARCHAR(255) DEFAULT ''"),
     ]
     with engine.begin() as conn:
         for table, col, decl in alterations:
             if table in existing and col not in existing[table]:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {decl}"))
+                try:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {decl}"))
+                except Exception:
+                    # 兼容不同 SQLite 版本对 ADD COLUMN 默认值 / NOT NULL 的限制
+                    # （老 SQLite 不允许非常量默认值；最坏情况只跳过这一列）
+                    pass
