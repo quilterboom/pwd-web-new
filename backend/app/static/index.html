@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>密码管理</title>
-  <link rel="stylesheet" href="/styles.css?v=9" />
+  <link rel="stylesheet" href="/styles.css?v=10" />
 </head>
 <body>
   <!-- 登录页 -->
@@ -450,13 +450,13 @@
     </div>
   </div>
 
-  <!-- 删除密码：第一步确认（风险提示） -->
+  <!-- 删除：第一步确认（风险提示，密码 / 密钥通用） -->
   <div id="del-confirm-modal" class="modal hidden">
     <div class="modal-card modal-card-narrow">
-      <h2>确认删除密码</h2>
+      <h2>确认删除</h2>
       <div class="del-warn">
-        <p>你即将删除账号 <strong id="del-account-1"></strong> 的密码。</p>
-        <p class="muted">删除后该密码将被移入回收（软删除），并生成一条删除记录供管理员在「审计日志」中查看。此操作不可撤销。</p>
+        <p>你即将删除<span id="del-kind-1"></span> <strong id="del-target-1"></strong>。</p>
+        <p class="muted">删除后将生成一条删除记录供管理员在「审计日志」中查看。此操作不可撤销。</p>
       </div>
       <div class="modal-actions">
         <button id="del-confirm-cancel" class="btn ghost">取消</button>
@@ -465,11 +465,11 @@
     </div>
   </div>
 
-  <!-- 删除密码：第二步确认（键入验证码） -->
+  <!-- 删除：第二步确认（键入验证码，密码 / 密钥通用） -->
   <div id="del-type-modal" class="modal hidden">
     <div class="modal-card modal-card-narrow">
       <h2>输入验证码以删除</h2>
-      <p>正在删除账号：<strong id="del-account-2"></strong></p>
+      <p>正在删除<span id="del-kind-2"></span>：<strong id="del-target-2"></strong></p>
       <p class="muted">请在下方输入框中键入 <code class="del-code">确认删除</code> 四个字，以完成删除。</p>
       <input id="del-type-input" type="text" class="del-type-input" placeholder="在此输入：确认删除" autocomplete="off" />
       <p id="del-type-hint" class="del-type-hint"></p>
@@ -488,6 +488,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=9"></script>
+  <script src="/app.js?v=11"></script>
 </body>
 </html>

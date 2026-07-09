@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -10,7 +12,7 @@ from ..core.deps import (
 )
 from ..crypto import manager
 from ..db import get_db
-from ..models import KeyRecord, OrgKey, User
+from ..models import History, KeyRecord, OrgKey, User
 
 router = APIRouter(tags=["keys"])
 
@@ -84,8 +86,8 @@ def _validate_keys(algorithm: str, public_key: str, private_key: str = "", priva
     provider = manager.get_provider(algorithm)
     try:
         provider.encrypt("密码管理-test", public_key)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"公钥格式无效：{e}") from e
+    except Exception:
+        raise HTTPException(status_code=400, detail="公钥格式无效，请检查公钥内容") from None
     if private_key:
         try:
             provider.decrypt(
@@ -96,8 +98,8 @@ def _validate_keys(algorithm: str, public_key: str, private_key: str = "", priva
         except ValueError as e:
             # 受口令保护 / 口令为空等「明确错误」，直接透传清晰文案，避免被笼统的“不匹配”掩盖
             raise HTTPException(status_code=400, detail=str(e)) from e
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"私钥与公钥不匹配或无效：{e}") from e
+        except Exception:
+            raise HTTPException(status_code=400, detail="私钥与公钥不匹配或无效") from None
 
 
 def _export_filename(rec: OrgKey, kind: str) -> str:
@@ -270,6 +272,25 @@ def delete_orgkey(kid: int, db: Session = Depends(get_db), user: User = Depends(
     if rec is None:
         raise HTTPException(status_code=404, detail="密钥不存在")
     ensure_group_access(db, user, rec.group_id)
+    name = rec.name
+    algo = rec.algorithm
+    gid = rec.group_id
     db.delete(rec)
+    db.commit()
+    # 与删除密码一致：生成一条删除记录供管理员在「审计日志」中查看
+    db.add(
+        History(
+            password_id=None,
+            group_id=gid,
+            action="delete",
+            title=name,
+            username=None,
+            algorithm=algo,
+            ciphertext=None,
+            notes=None,
+            changed_by=user.username,
+            comment=f"删除密钥（名称：{name}）",
+        )
+    )
     db.commit()
     return {"ok": True}

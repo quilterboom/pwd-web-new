@@ -774,7 +774,7 @@ const HISTORY_FIELD_LABELS = {
   algorithm: "加密方式",
   orgkey_id: "加密密钥",
 };
-const HISTORY_ACTION_LABELS = { create: "新增", update: "修改", delete: "删除" };
+const HISTORY_ACTION_LABELS = { create: "新增", update: "修改", delete: "删除", export: "导出" };
 
 /* 把后端写入的 comment 里残留的英文字段名替换成中文。
  * 例："修改了 secret,entry_password,notes" -> "修改了 密码明文，解密密码，备注"
@@ -816,6 +816,8 @@ async function openHistory(id) {
 
 /* ---------- 删除（两步确认） ---------- */
 let pendingDeleteId = null;
+let pendingDeleteType = "pw";
+let pendingDeleteName = "";
 
 function _delAccountLabel(id) {
   const e = state.entries.find((x) => x.id === id);
@@ -823,17 +825,34 @@ function _delAccountLabel(id) {
   return e.username || e.title || ("#" + id);
 }
 
-/* 第一步：风险提示弹窗 */
+/* 第一步：风险提示弹窗（密码 / 密钥通用） */
 function doDelete(id) {
+  const e = state.entries.find((x) => x.id === id);
+  const name = e ? (e.username || e.title || ("#" + id)) : "未知账号";
+  _openDelConfirm(name, "账号", id, "pw");
+}
+
+/* 密钥删除：走与密码删除相同的二次确认流程 */
+function doDeleteKey(id) {
+  const k = keyState.entries.find((x) => x.id === id);
+  const name = k ? (k.name || ("#" + id)) : ("#" + id);
+  _openDelConfirm(name, "密钥", id, "key");
+}
+
+function _openDelConfirm(name, kind, id, type) {
   pendingDeleteId = id;
-  $("del-account-1").textContent = _delAccountLabel(id);
+  pendingDeleteType = type;
+  pendingDeleteName = name;
+  $("del-kind-1").textContent = kind;
+  $("del-target-1").textContent = name;
   $("del-confirm-modal").classList.remove("hidden");
 }
 
 /* 第二步：键入「确认删除」才放行 */
 function showDelTypeStep() {
   if (pendingDeleteId == null) return;
-  $("del-account-2").textContent = _delAccountLabel(pendingDeleteId);
+  $("del-kind-2").textContent = pendingDeleteType === "key" ? "密钥" : "账号";
+  $("del-target-2").textContent = pendingDeleteName;
   const inp = $("del-type-input");
   inp.value = "";
   $("del-type-confirm").disabled = true;
@@ -856,12 +875,21 @@ async function confirmDelTyped() {
   if (pendingDeleteId == null) return;
   if ($("del-type-input").value.trim() !== "确认删除") return;
   const id = pendingDeleteId;
+  const type = pendingDeleteType;
   $("del-type-modal").classList.add("hidden");
   pendingDeleteId = null;
+  pendingDeleteType = "pw";
+  pendingDeleteName = "";
   try {
-    await api("/api/passwords/" + id, { method: "DELETE" });
-    showToast("已删除密码（已记入审计日志）");
-    loadEntries();
+    if (type === "key") {
+      await api("/api/orgkeys/" + id, { method: "DELETE" });
+      showToast("已删除密钥（已记入审计日志）");
+      loadOrgKeys();
+    } else {
+      await api("/api/passwords/" + id, { method: "DELETE" });
+      showToast("已删除密码（已记入审计日志）");
+      loadEntries();
+    }
   } catch (e) {
     showToast("删除失败：" + e.message);
   }
@@ -1164,14 +1192,8 @@ async function exportOrgKey(id, kind) {
 }
 
 async function deleteOrgKey(id) {
-  if (!confirm("确认删除该密钥条目？该操作不可撤销。")) return;
-  try {
-    await api("/api/orgkeys/" + id, { method: "DELETE" });
-    showToast("已删除");
-    loadOrgKeys();
-  } catch (e) {
-    showToast("删除失败：" + e.message);
-  }
+  // 复用与密码删除一致的二次确认流程
+  doDeleteKey(id);
 }
 
 function switchTab(tab) {

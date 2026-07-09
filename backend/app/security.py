@@ -1,5 +1,8 @@
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
+import os
 import secrets
+import time
 
 import jwt
 from cryptography.hazmat.primitives import hashes
@@ -93,6 +96,44 @@ def expected_proof(pw_verifier_hex: str, nonce_hex: str) -> str:
     # 解码 verifier 与 nonce 为原始字节并拼接
     msg = bytes.fromhex(pw_verifier_hex or "") + bytes.fromhex(nonce_hex or "")
     return _sm3_hex(msg)
+
+
+# ────────────── 登录挑战的「服务端一次性存储」（防重放）──────────────
+#
+# 设计：login/begin 生成的 nonce 必须由服务端保存并与用户名绑定；login/verify 只能使用
+# 该「服务端下发且未被消费过」的 nonce。一次验证成功后立即作废（single-use），
+# 且带短时效（默认 5 分钟）。这样：
+#   • 监听者即便截获 (nonce, proof) 也无法重放 —— 挑战已被消费 / 已过期；
+#   • 在线爆破每个猜测都必须先 begin 再 verify，失败即作废挑战，配合限速可被有效遏制。
+#
+# 该存储为进程内内存字典：本应用以单进程 uvicorn 部署（run.py 单 worker），足够；
+# 若未来改为多 worker，应替换为共享存储（如 Redis / 数据库）。
+_login_challenges: "OrderedDict[str, dict]" = OrderedDict()
+_CHALLENGE_TTL = int(os.getenv("LOGIN_CHALLENGE_TTL", "300"))  # 秒
+
+
+def store_login_challenge(username: str, nonce_hex: str) -> None:
+    """保存（覆盖）某用户当前有效的一次性登录挑战，并清理已过期条目。"""
+    now = time.time()
+    expired = [u for u, c in _login_challenges.items() if c["expires"] <= now]
+    for u in expired:
+        _login_challenges.pop(u, None)
+    _login_challenges[username] = {"nonce": nonce_hex, "expires": now + _CHALLENGE_TTL}
+
+
+def consume_login_challenge(username: str, nonce_hex: str) -> bool:
+    """校验客户端提交的 nonce 是否匹配服务端下发的「未过期且未消费」挑战。
+
+    返回 True 表示匹配（调用方应继续比对 proof）；无论匹配与否都会消费（删除）该挑战，
+    以保证 single-use（重放同一个 nonce 必然失败）。
+    """
+    ch = _login_challenges.pop(username, None)
+    if ch is None:
+        return False
+    if time.time() > ch["expires"]:
+        return False
+    return secrets.compare_digest(ch["nonce"], nonce_hex or "")
+
 
 
 # ────────────── 旧的 PBKDF2-SM3 派生（保留供条目密码加解密复用）──────────────

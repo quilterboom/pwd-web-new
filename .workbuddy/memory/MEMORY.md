@@ -38,7 +38,11 @@
 - **bcrypt 固定 `==4.0.1`**；**gmssl SM2 公钥手动推导**；**SQLAlchemy 多对多用 `user_groups` Table**；**HTTP 导出中文名双字段 Content-Disposition**。
 - **批量导入必须是 multipart/form-data**（FastAPI `File()`），裸 `text/csv` body → 422。
 - **沙箱强杀加密进程**：加密链路测试进容器跑；本机只 `py_compile`/`node --check`。
-- **docker commit 增量**（避免 `--no-cache` SIGKILL）：起 `sleep 600` 临时容器 → `rm -rf /app/app /app/run.py /app/requirements.txt` → `docker cp` 完整新代码 → 清 `*.pyc` → `commit --change 'CMD ["python","run.py"]' --change 'EXPOSE 9010' --change 'VOLUME ["/app/data"]'`；commit 前不得 `docker rm`。
+- **docker commit 增量**（避免 `--no-cache` SIGKILL）：起临时容器（可用 `--entrypoint sleep 600` 让它空转）→ `rm -rf /app/app /app/run.py /app/requirements.txt` → `docker cp` 完整新代码 → 清 `*.pyc` → commit。commit 前不得 `docker rm`。
+- **⚠️ commit 会捕获容器的 ENTRYPOINT（致命坑，2026-07-09 爆过）**：若临时容器是用 `--entrypoint sleep` 起的，commit 出来的镜像 `Entrypoint` 会被写成 `['sleep']`，而 `CMD` 仍是 `['python','run.py']` → 真实 `docker run` 直接执行 `sleep python run.py` 报错（`sleep: invalid time interval 'python'`），应用根本起不来。**此坑在「exec 进容器手动跑 python run.py」的测试里完全发现不了**，只有真正 `docker run` 部署时才暴露。
+  - **正确 commit 命令（必须显式覆盖 ENTRYPOINT）**：`docker commit --change 'ENTRYPOINT ["python","run.py"]' --change 'CMD []' --change 'EXPOSE 9010' --change 'VOLUME ["/app/data"]' <容器> password-manager:latest`。
+  - 不要只写 `--change 'CMD ["python","run.py"]'`（漏了 ENTRYPOINT 覆盖就会继承 sleep）。`--change 'ENTRYPOINT []'` 空数组 Docker 会**忽略**，必须给明确值。
+  - 验证：commit 后 `docker inspect` 确认 `Entrypoint: ['python','run.py']`、`Cmd: None`；再**不加 `--entrypoint`** 起一个容器，`docker logs` 应看到 uvicorn 启动日志而非 sleep 报错。
 - **docker cp 增量覆盖坑**：在临时容器上 `rm -rf /app/app` 后 `docker cp backend/app 容器:/app/app`，**已存在的同名文件可能不会覆盖**（overlay 缓存，表现为 app.js 更新了但 admin.py/main.py 仍是旧代码）。务必 cp 后 `grep` 校验每个改动文件已更新 + `py_compile` 确认；个别未更新的文件先 `docker exec 容器 rm -f 该文件` 再单独 `docker cp`。
 - **前端改 JS/CSS 记得 bump `?v=N`**（index.html 现 `?v=7`）。
 - **DB 迁移必须「通用」**：`db._migrate_columns()` 扫描 `Base.metadata` 所有模型列，`ALTER TABLE ADD COLUMN` 补齐旧库缺失列（带 SQLite 兼容默认值）。**绝不能退回硬编码列清单**——曾因漏列 `passwords.deleted` 导致部署库 `GET /api/passwords` 报 `no such column: passwords.deleted` → 500。新加模型列后无需改迁移代码。

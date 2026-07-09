@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 from typing import Iterable, List, Tuple
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -289,6 +290,11 @@ async def batch_import_users(
     if not raw:
         raise HTTPException(status_code=400, detail="文件为空")
 
+    # 上传体积上限（防 zip-bomb / 内存耗尽型 DoS）
+    max_bytes = int(os.getenv("BATCH_UPLOAD_MAX_BYTES", "10485760"))  # 默认 10MB
+    if len(raw) > max_bytes:
+        raise HTTPException(status_code=413, detail="上传文件过大（上限 10MB）")
+
     fname = (file.filename or "").lower()
     if fname.endswith(".xlsx"):
         try:
@@ -305,9 +311,6 @@ async def batch_import_users(
 
     if not data_rows:
         raise HTTPException(status_code=400, detail="未找到可导入的数据行；请检查表头是否为「用户名 / 密码 / 是否管理员 / 所属分组」")
-
-    # 调试：打印出读取到的每一行（仅诊断时可见）
-    print(f"[batch_import] got {len(data_rows)} data rows:", data_rows[:3], "...", file=__import__("sys").stderr)
 
     headers_map = {
         "username": "用户名",

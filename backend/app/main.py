@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
+import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
@@ -21,13 +22,45 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="密码管理 - 服务端加解密密码管理器", lifespan=lifespan)
 
+# CORS：本应用前端与 API 同源（均由本服务托管），默认不允许任何跨域来源；
+# 仅在确实需要跨域访问时，通过环境变量 CORS_ALLOW_ORIGINS 显式指定（逗号分隔）。
+# 应用使用 Bearer Token 鉴权（无 Cookie），故关闭 credentials，避免凭据型跨站风险。
+_CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """统一补充安全响应头（点击劫持 / MIME 嗅探 / 引用泄露 / 内联脚本注入 等防护）。"""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=()"
+    )
+    # 严格 CSP：仅允许同源脚本/样式/图片/连接；frame-ancestors 'none' 防嵌套；
+    # 因模板中存在内联 style 属性，style-src 保留 'unsafe-inline'（脚本一律外链，无需内联）。
+    csp = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'"
+    )
+    response.headers.setdefault("Content-Security-Policy", csp)
+    return response
+
 
 app.include_router(auth.router)
 app.include_router(admin.mine_router)

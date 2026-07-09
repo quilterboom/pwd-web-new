@@ -140,8 +140,8 @@ def _encrypt_for_create(db: Session, user: User, req: CreateRequest) -> dict:
         if orgkey is not None:
             try:
                 ciphertext = manager.get_provider(algo).encrypt(inner_blob, orgkey.public_key)
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"用 OrgKey 公钥加密失败：{e}") from e
+            except Exception:
+                raise HTTPException(status_code=400, detail="用 OrgKey 公钥加密失败，请检查公钥内容") from None
             return {
                 "algorithm": algo,
                 "scheme": "legacy",
@@ -175,16 +175,17 @@ def _legacy_decrypt(db: Session, e: PasswordEntry) -> str:
         except RuntimeError:
             # 指定的 OrgKey 不存在或未持有私钥 → 回退到服务端默认密钥
             pass
-        except ValueError as ex:
+        except ValueError:
+            # 受口令保护但口令缺失/错误：返回脱敏文案，避免泄露内部异常细节
+            raise HTTPException(
+                status_code=400,
+                detail="用 OrgKey 私钥解密失败（缺少或错误的解密口令）",
+            ) from None
+        except Exception:
             raise HTTPException(
                 status_code=500,
-                detail=f"用 OrgKey 私钥解密失败（缺少该密钥的口令）：{ex}",
-            ) from ex
-        except Exception as ex:
-            raise HTTPException(
-                status_code=500,
-                detail=f"用 OrgKey 私钥解密失败：{ex}",
-            ) from ex
+                detail="用 OrgKey 私钥解密失败，请确认该密钥的私钥与口令是否正确",
+            ) from None
     return manager.decrypt_secret(db, e.algorithm, e.ciphertext)
 
 
@@ -605,6 +606,24 @@ def export_passwords(
             status_code=400,
             detail=f"有 {skipped} 条密码解密失败，无法导出明文（{names}）。请检查这些条目的解密密码是否正确。",
         )
+
+    # 安全审计：明文导出属于高风险操作（相当于整批导出凭据），记入审计日志以便追溯
+    if req.plaintext:
+        db.add(
+            History(
+                password_id=None,
+                group_id=entries[0].group_id if entries else None,
+                action="export",
+                title="明文导出密码",
+                username=None,
+                algorithm=None,
+                ciphertext=None,
+                notes=f"明文导出 {len(entries)} 条密码",
+                changed_by=user.username,
+                comment=f"明文导出 {len(entries)} 条密码",
+            )
+        )
+        db.commit()
 
     if fmt == "csv":
         buf = io.StringIO()
