@@ -17,7 +17,7 @@ from ..core.deps import (
     require_admin,
 )
 from ..db import get_db
-from ..models import Group, PasswordEntry, User, user_groups
+from ..models import Group, History, PasswordEntry, User, user_groups
 from ..security import derive_password_verifier, hash_password
 
 # ---------------- 当前用户可见分组（非管理员接口） ----------------
@@ -27,6 +27,8 @@ mine_router = APIRouter(tags=["groups"])
 users_router = APIRouter(prefix="/api/admin/users", tags=["admin-users"])
 # ---------------- 管理员：分组管理 ----------------
 groups_router = APIRouter(prefix="/api/admin/groups", tags=["admin-groups"])
+# ---------------- 管理员：审计日志 ----------------
+audit_router = APIRouter(prefix="/api/admin/audit", tags=["admin-audit"])
 
 
 # ============================ 当前用户分组 ============================
@@ -286,3 +288,45 @@ def delete_group(
     db.delete(group)
     db.commit()
     return {"id": gid, "message": "deleted"}
+
+
+# ============================ 审计日志（仅管理员） ============================
+@audit_router.get("")
+def list_audit(
+    action: Optional[str] = None,
+    limit: int = 500,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """管理员审计日志：返回修改记录（含删除），仅管理员可访问。
+
+    - 不传 action：返回全部记录（新增 / 修改 / 删除）。
+    - 传 action=delete：仅返回删除密码的记录，便于管理员集中核查删除行为。
+    返回的每条记录都带有分组名称（group_name），便于跨分组审计。
+    """
+    if limit <= 0 or limit > 2000:
+        limit = 500
+    q = db.query(History)
+    if action:
+        q = q.filter_by(action=action)
+    q = q.order_by(History.changed_at.desc()).limit(limit)
+    groups = {g.id: g.name for g in db.query(Group).all()}
+    rows = []
+    for r in q.all():
+        rows.append(
+            {
+                "id": r.id,
+                "password_id": r.password_id,
+                "group_id": r.group_id,
+                "group_name": groups.get(r.group_id, "—"),
+                "action": r.action,
+                "title": r.title,
+                "username": r.username,
+                "algorithm": r.algorithm,
+                "notes": r.notes,
+                "changed_by": r.changed_by,
+                "changed_at": r.changed_at.isoformat() if r.changed_at else None,
+                "comment": r.comment,
+            }
+        )
+    return rows

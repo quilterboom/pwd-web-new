@@ -38,11 +38,15 @@
 - **bcrypt 固定 `==4.0.1`**；**gmssl SM2 公钥手动推导**；**SQLAlchemy 多对多用 `user_groups` Table**；**HTTP 导出中文名双字段 Content-Disposition**。
 - **批量导入必须是 multipart/form-data**（FastAPI `File()`），裸 `text/csv` body → 422。
 - **沙箱强杀加密进程**：加密链路测试进容器跑；本机只 `py_compile`/`node --check`。
-- **docker commit 增量**（避免 `--no-cache` SIGKILL）：起 `sleep 600` 临时容器 → `rm -rf /app/app /app/run.py` → `docker cp` 完整新代码 → 清 `*.pyc` → `commit --change 'CMD ["python","run.py"]' --change 'EXPOSE 9010' --change 'VOLUME ["/app/data"]'`；commit 前不得 `docker rm`。
-- **前端改 JS/CSS 记得 bump `?v=N`**（index.html 现 `?v=6`）。
+- **docker commit 增量**（避免 `--no-cache` SIGKILL）：起 `sleep 600` 临时容器 → `rm -rf /app/app /app/run.py /app/requirements.txt` → `docker cp` 完整新代码 → 清 `*.pyc` → `commit --change 'CMD ["python","run.py"]' --change 'EXPOSE 9010' --change 'VOLUME ["/app/data"]'`；commit 前不得 `docker rm`。
+- **docker cp 增量覆盖坑**：在临时容器上 `rm -rf /app/app` 后 `docker cp backend/app 容器:/app/app`，**已存在的同名文件可能不会覆盖**（overlay 缓存，表现为 app.js 更新了但 admin.py/main.py 仍是旧代码）。务必 cp 后 `grep` 校验每个改动文件已更新 + `py_compile` 确认；个别未更新的文件先 `docker exec 容器 rm -f 该文件` 再单独 `docker cp`。
+- **前端改 JS/CSS 记得 bump `?v=N`**（index.html 现 `?v=7`）。
+- **DB 迁移必须「通用」**：`db._migrate_columns()` 扫描 `Base.metadata` 所有模型列，`ALTER TABLE ADD COLUMN` 补齐旧库缺失列（带 SQLite 兼容默认值）。**绝不能退回硬编码列清单**——曾因漏列 `passwords.deleted` 导致部署库 `GET /api/passwords` 报 `no such column: passwords.deleted` → 500。新加模型列后无需改迁移代码。
+- **`api()` 抛错务必附 `e.status = res.status`**：前端 `doLogin` 靠 `err.status === 409` 判断「未迁移账号→回退明文 `/login`」。若只把中文 `detail` 放进 `message`，`includes("409")` 永远 false，用户会卡在 409 无法登录。
+- **provider 接口必须一致（SM2 passphrase 坑）**：`manager.decrypt_with_orgkey` / `keys._validate_keys` 对 gpg/sm2 **统一**调用 `.decrypt(ct, priv, passphrase=pp)`。GPG 的 `decrypt` 有 `passphrase=None` 形参，但 **SM2 的 `sm2_crypto.decrypt/decrypt_bytes` 没有** → 用 SM2 OrgKey 解密就抛 `TypeError: decrypt() got an unexpected keyword argument 'passphrase'`（被包装成「用 OrgKey 私钥解密失败」500）。**修复**：给 SM2 两个 decrypt 函数加 `passphrase: str = None` 形参并直接忽略（SM2 私钥是 raw hex，无 passphrase 概念）。以后加新 provider 时，所有 `decrypt/encrypt` 签名要对齐 gpg/sm2。
 
 ## 验证模式
 - E2E HTTP 测试（加密在服务端容器内，本机 HTTP 客户端安全）：`backend/offline/e2e_http_test.py`（SCRAM 登录 + xlsx/csv 模板 + 批量导入 + GPG 受口令密钥导入/加解密）+ `e2e_extra.py`（xlsx 回环 + 错口令拒绝）。需 live 容器（如 `pm-test2` 9012）。
 - 容器内生成 GPG 受口令密钥：`docker exec X python3 -c "import sys,types;sys.modules['imghdr']=types.ModuleType('imghdr');from pgpy import PGPKey,PGPUID;from pgpy.constants import SymmetricKeyAlgorithm,HashAlgorithm,KeyFlags,PubKeyAlgorithm;k=PGPKey.new(PubKeyAlgorithm.RSAEncryptOrSign,2048);k.add_uid(PGPUID.new('t',email='t@l'),usage={KeyFlags.EncryptCommunications,KeyFlags.EncryptStorage});k.protect('pw',SymmetricKeyAlgorithm.AES256,HashAlgorithm.SHA256);open('/tmp/p','w').write(str(k));open('/tmp/pu','w').write(str(k.pubkey))"`。
 - 测试容器：`docker run -d --name pwd-test --platform linux/amd64 -p 9012:9010 -v /tmp/pwd-test-data:/app/data -e ADMIN_PASSWORD='TestPass!2026' password-manager:latest`；admin/TestPass!2026。
-- 容器内跑旧冒烟：`smoke_vault_export.py` `smoke_hybrid.py` `smoke_keyimport.py` `smoke_history_zh.py` `smoke_form_lock.py`；`smoke_entry.py` 已 stale 跳过。
+- 容器内跑旧冒烟：`smoke_vault_export.py` `smoke_hybrid.py` `smoke_keyimport.py` `smoke_history_zh.py` `smoke_form_lock.py` `smoke_audit.py` `smoke_migration.py`（500 回归护栏：旧库缺列仍能 GET /api/passwords==200）；`smoke_entry.py` 已 stale 跳过。

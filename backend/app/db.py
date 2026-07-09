@@ -27,35 +27,71 @@ def init_db():
 def _migrate_columns():
     """对已在运行的旧库做增量加列，避免离线服务器已有数据丢失。
 
-    只新增缺失的列/表，绝不删除或重命名，保证向后兼容。
+    通用实现：扫描所有模型列，若某张表缺少某列，则用 ALTER TABLE ADD COLUMN 补上
+    （自动带上 SQLite 兼容的默认值）。只新增、绝不删除或重命名，保证向后兼容，
+    并且新增的列无需手工维护清单（避免漏列导致查询 500）。
     """
+    from . import models  # noqa: F401  (确保模型已注册到 Base.metadata)
+    from sqlalchemy import Boolean, Integer, String, Text, DateTime, LargeBinary
+
     insp = inspect(engine)
     existing = {t: {c["name"] for c in insp.get_columns(t)} for t in insp.get_table_names()}
 
-    # 需要追加的列： (表名, 列名, 声明)。声明需带 SQLite 兼容的默认值。
-    alterations = [
-        ("users", "is_admin", "INTEGER NOT NULL DEFAULT 0"),
-        ("passwords", "group_id", "INTEGER"),
-        ("history", "group_id", "INTEGER"),
-        # 条目级密码加密（每条密码用自己的密码对称加密）
-        ("passwords", "scheme", "VARCHAR(16) DEFAULT 'legacy'"),
-        ("passwords", "entry_salt", "VARCHAR(64) DEFAULT ''"),
-        ("passwords", "entry_iv", "VARCHAR(64) DEFAULT ''"),
-        # legacy 方案可选指定 OrgKey（按组织持有密钥对加密，而不是服务端默认密钥）
-        ("passwords", "orgkey_id", "INTEGER"),
-        # SCRAM-SM3 登录凭据：用户登录时不再以明文传递密码
-        ("users", "pw_salt", "VARCHAR(64) DEFAULT ''"),
-        ("users", "pw_verifier", "VARCHAR(128) DEFAULT ''"),
-        # GPG 私钥口令支持：私钥可能受 passphrase 保护；导入时一起保存
-        ("org_keys", "private_protected", "INTEGER NOT NULL DEFAULT 0"),
-        ("org_keys", "private_passphrase", "VARCHAR(255) DEFAULT ''"),
-    ]
+    def column_decl(col):
+        t = col.type
+        if isinstance(t, Boolean):
+            decl = "INTEGER"
+        elif isinstance(t, String):
+            decl = f"VARCHAR({t.length or 255})"
+        elif isinstance(t, Text):
+            decl = "TEXT"
+        elif isinstance(t, DateTime):
+            decl = "TIMESTAMP"
+        elif isinstance(t, LargeBinary):
+            decl = "BLOB"
+        elif isinstance(t, Integer):
+            decl = "INTEGER"
+        else:
+            decl = "TEXT"
+
+        # 模型上的标量默认值（如 default=False / default="legacy"）
+        default_arg = None
+        d = col.default
+        if d is not None and getattr(d, "is_scalar", False):
+            default_arg = d.arg
+
+        if default_arg is not None:
+            if isinstance(default_arg, bool):
+                decl += f" DEFAULT {1 if default_arg else 0}"
+            elif isinstance(default_arg, (int, float)):
+                decl += f" DEFAULT {default_arg}"
+            else:
+                decl += f" DEFAULT '{str(default_arg).replace(chr(39), chr(39) * 2)}'"
+        elif not col.nullable:
+            # NOT NULL 但没有模型默认值：给类型安全的兜底默认值，保证旧行可填充
+            if isinstance(t, (Boolean, Integer)):
+                decl += " DEFAULT 0"
+            else:
+                decl += " DEFAULT ''"
+
+        if not col.nullable:
+            decl += " NOT NULL"
+        return decl
+
     with engine.begin() as conn:
-        for table, col, decl in alterations:
-            if table in existing and col not in existing[table]:
+        for table_name, table in Base.metadata.tables.items():
+            cols = existing.get(table_name)
+            if cols is None:
+                # 整张表缺失交给 create_all 创建
+                continue
+            for col in table.columns:
+                if col.name in cols:
+                    continue
                 try:
-                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {decl}"))
-                except Exception:
-                    # 兼容不同 SQLite 版本对 ADD COLUMN 默认值 / NOT NULL 的限制
-                    # （老 SQLite 不允许非常量默认值；最坏情况只跳过这一列）
-                    pass
+                    conn.execute(
+                        text(f'ALTER TABLE "{table_name}" ADD COLUMN "{col.name}" {column_decl(col)}')
+                    )
+                except Exception as e:
+                    # 兼容个别 SQLite 版本对 ADD COLUMN 默认值 / NOT NULL 的限制
+                    # （最坏情况只跳过这一列，不影响其他列）
+                    print(f"[migrate] skip {table_name}.{col.name}: {e}")

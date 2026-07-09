@@ -125,7 +125,9 @@ function api(path, opts = {}) {
     try { data = await res.json(); } catch (e) { /* empty body */ }
     if (!res.ok) {
       const msg = (data && (data.detail || data.message)) || ("请求失败 (" + res.status + ")");
-      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      const e = new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      e.status = res.status;
+      throw e;
     }
     return data;
   });
@@ -214,7 +216,7 @@ async function doLogin(e) {
       });
     } catch (err) {
       // 409: 旧账号尚未迁移 → 走明文 /login 完成一次性迁移
-      if (String(err.message).includes("409")) {
+      if (err.status === 409 || String(err.message).includes("409")) {
         const data = await api("/api/auth/login", {
           method: "POST",
           body: JSON.stringify({ username, password }),
@@ -430,7 +432,8 @@ async function loadOrgkeysForSelect(selectId) {
       sel.appendChild(opt);
     }
     if (selectId != null) sel.value = String(selectId);
-    sel.disabled = false;
+    // 若表单当前处于「未解密」锁定状态，加载完成后仍保持置灰
+    sel.disabled = formLocked;
   } catch (e) {
     sel.innerHTML = `<option value="">（加载失败：${esc(e.message)}）</option>`;
   }
@@ -469,12 +472,11 @@ function toggleEntryReveal() {
 }
 
 /* ---------- 表单弹窗（新增 / 编辑） ---------- */
-// 编辑模式下「未拿到结果（未成功解密）」时，编辑页面除「取消」外的所有控件都置灰：
-// 包括锁框内的「解密并继续」按钮和锁框密码输入，以及下方表单的所有字段。
-// 只保留「取消」一个逃生出口。
+// 编辑模式下「未成功解密」时，除「取消」外，下方表单的所有字段都置灰；
+// 但锁框自身的「解密密码」输入框与「解密并继续」按钮必须保持可用，否则无法解锁；
+// 未解密时，加密密钥（OrgKey）选项同样保持置灰。只保留「取消」一个逃生出口。
+let formLocked = false;  // 当前表单是否处于「未解密」锁定状态
 const FORM_EDIT_LOCKED_IDS = [
-  // 锁框
-  "form-lock-password", "form-unlock",
   // 表单字段
   "f-username", "f-algorithm",
   "f-entry-password", "f-entry-password-confirm", "f-new-entry-password",
@@ -487,11 +489,12 @@ const FORM_EDIT_LOCKED_IDS = [
   "form-save",
 ];
 function setFormEditLocked(locked) {
+  formLocked = !!locked;
   for (const id of FORM_EDIT_LOCKED_IDS) {
     const el = document.getElementById(id);
     if (el) el.disabled = !!locked;
   }
-  // 取消按钮永远可用（让用户能退出当前编辑）
+  // 锁框的解密输入框 / 解锁按钮始终可用；取消按钮永远可用
   const cancel = document.getElementById("form-cancel");
   if (cancel) cancel.disabled = false;
 }
@@ -640,7 +643,19 @@ async function saveForm() {
       return ($("form-error").textContent = "请输入解密密码");
     if (entryPassword !== $("f-entry-password-confirm").value)
       return ($("form-error").textContent = "两次输入的解密密码不一致");
+    // 重复新增校验：同一分组下不允许「账号名称 + 加密方式」完全相同
     const groupId = Number($("f-group").value);
+    const uName = $("f-username").value.trim().toLowerCase();
+    const dup = state.entries.find(
+      (e) =>
+        e.group_id === groupId &&
+        (e.username || "").trim().toLowerCase() === uName &&
+        e.algorithm === algo
+    );
+    if (dup) {
+      return ($("form-error").textContent =
+        `该分组下已存在账号「${$("f-username").value.trim()}」且加密方式相同（${algo}），请勿重复新增`);
+    }
     payload.group_id = groupId;
     payload.secret = secret;
     payload.algorithm = algo;
@@ -799,16 +814,63 @@ async function openHistory(id) {
   }
 }
 
-/* ---------- 删除 ---------- */
-async function doDelete(id) {
-  if (!confirm("确认删除该密码记录？删除后会记入修改记录。")) return;
+/* ---------- 删除（两步确认） ---------- */
+let pendingDeleteId = null;
+
+function _delAccountLabel(id) {
+  const e = state.entries.find((x) => x.id === id);
+  if (!e) return "未知账号";
+  return e.username || e.title || ("#" + id);
+}
+
+/* 第一步：风险提示弹窗 */
+function doDelete(id) {
+  pendingDeleteId = id;
+  $("del-account-1").textContent = _delAccountLabel(id);
+  $("del-confirm-modal").classList.remove("hidden");
+}
+
+/* 第二步：键入「确认删除」才放行 */
+function showDelTypeStep() {
+  if (pendingDeleteId == null) return;
+  $("del-account-2").textContent = _delAccountLabel(pendingDeleteId);
+  const inp = $("del-type-input");
+  inp.value = "";
+  $("del-type-confirm").disabled = true;
+  $("del-type-hint").textContent = "";
+  $("del-type-hint").classList.remove("ok");
+  $("del-confirm-modal").classList.add("hidden");
+  $("del-type-modal").classList.remove("hidden");
+  inp.focus();
+}
+
+function onDelTypeInput() {
+  const val = $("del-type-input").value.trim();
+  const ok = val === "确认删除";
+  $("del-type-confirm").disabled = !ok;
+  $("del-type-hint").textContent = val && !ok ? "输入内容不符，请键入「确认删除」" : "";
+  $("del-type-hint").classList.toggle("ok", ok);
+}
+
+async function confirmDelTyped() {
+  if (pendingDeleteId == null) return;
+  if ($("del-type-input").value.trim() !== "确认删除") return;
+  const id = pendingDeleteId;
+  $("del-type-modal").classList.add("hidden");
+  pendingDeleteId = null;
   try {
     await api("/api/passwords/" + id, { method: "DELETE" });
-    showToast("已删除");
+    showToast("已删除密码（已记入审计日志）");
     loadEntries();
   } catch (e) {
     showToast("删除失败：" + e.message);
   }
+}
+
+function cancelDel() {
+  $("del-confirm-modal").classList.add("hidden");
+  $("del-type-modal").classList.add("hidden");
+  pendingDeleteId = null;
 }
 
 /* ---------- 随机密码 ---------- */
@@ -857,12 +919,15 @@ function renderExportPerRow(masterPw) {
   }
 }
 
-/* 「统一密码」回车 / 失焦时同步到逐项密码框（仅覆盖仍为空的） */
+/* 输入「统一解密密码」后：逐项密码框置灰，并展示统一密码内容；
+   清空统一密码则恢复逐项可填并清空镜像内容。 */
 function syncMasterToPerRow() {
   const master = $("export-master-pw").value;
-  if (master === "") return;
+  const hasMaster = master !== "";
   document.querySelectorAll("#export-perrow .exp-pw").forEach((inp) => {
-    if (!inp.value) inp.value = master;
+    inp.disabled = hasMaster;
+    if (hasMaster) inp.value = master;
+    else inp.value = "";
   });
 }
 
@@ -1033,7 +1098,7 @@ function openKeyImport() {
   $("ki-passphrase").type = "password";
   $("ki-passphrase-reveal").textContent = "显示";
   // 默认只有用户填了私钥时才显示口令行；切换算法也会重置显示
-  applyImportPassphraseUI(algorithm);
+  applyImportPassphraseUI($("ki-algorithm").value);
   $("ki-error").textContent = "";
   $("keyimport-modal").classList.remove("hidden");
   $("ki-name").focus();
@@ -1119,10 +1184,41 @@ function switchTab(tab) {
 }
 
 /* ---------- 系统管理（管理员） ---------- */
+let auditFilter = "all";
+
 function switchSub(sub) {
   document.querySelectorAll(".subtab").forEach((b) => b.classList.toggle("active", b.dataset.sub === sub));
   $("admin-users-sec").classList.toggle("hidden", sub !== "users");
   $("admin-groups-sec").classList.toggle("hidden", sub !== "groups");
+  $("admin-audit-sec").classList.toggle("hidden", sub !== "audit");
+  if (sub === "audit") loadAdminAudit();
+}
+
+async function loadAdminAudit() {
+  const q = auditFilter && auditFilter !== "all" ? ("?action=" + encodeURIComponent(auditFilter)) : "";
+  try {
+    const rows = await api("/api/admin/audit" + q);
+    const tbody = $("admin-audit-tbody");
+    tbody.innerHTML = "";
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="7" style="color:#6b7280">暂无审计记录</td></tr>`;
+      return;
+    }
+    for (const r of rows) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${fmtTime(r.changed_at)}</td>
+        <td class="act-${r.action}">${HISTORY_ACTION_LABELS[r.action] || r.action}</td>
+        <td>${esc(r.username || "")}</td>
+        <td>${esc(r.title || "")}</td>
+        <td>${esc(r.group_name || "—")}</td>
+        <td>${esc(r.changed_by || "")}</td>
+        <td>${esc(humanizeComment(r.comment || ""))}</td>`;
+      tbody.appendChild(tr);
+    }
+  } catch (e) {
+    showToast("加载审计日志失败：" + e.message);
+  }
 }
 
 async function openAdmin() {
@@ -1420,6 +1516,23 @@ function bind() {
   document.querySelectorAll(".subtab").forEach((b) =>
     b.addEventListener("click", () => switchSub(b.dataset.sub))
   );
+  // 审计日志：类型筛选（全部 / 新增 / 修改 / 删除）
+  document.querySelectorAll("#audit-filter .seg").forEach((b) =>
+    b.addEventListener("click", () => {
+      document.querySelectorAll("#audit-filter .seg").forEach((x) => x.classList.toggle("active", x === b));
+      auditFilter = b.dataset.act;
+      loadAdminAudit();
+    })
+  );
+  // 删除两步确认
+  $("del-confirm-cancel").addEventListener("click", cancelDel);
+  $("del-confirm-go").addEventListener("click", showDelTypeStep);
+  $("del-type-cancel").addEventListener("click", cancelDel);
+  $("del-type-confirm").addEventListener("click", confirmDelTyped);
+  $("del-type-input").addEventListener("input", onDelTypeInput);
+  $("del-type-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !$("del-type-confirm").disabled) confirmDelTyped();
+  });
   $("add-user-btn").addEventListener("click", openUserAdd);
   $("add-group-btn").addEventListener("click", openGroupAdd);
   $("user-cancel").addEventListener("click", () => $("user-modal").classList.add("hidden"));

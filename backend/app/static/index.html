@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>密码管理</title>
-  <link rel="stylesheet" href="/styles.css?v=6" />
+  <link rel="stylesheet" href="/styles.css?v=9" />
 </head>
 <body>
   <!-- 登录页 -->
@@ -209,6 +209,7 @@
       <nav class="subtabs">
         <button class="subtab active" data-sub="users">用户</button>
         <button class="subtab" data-sub="groups">分组</button>
+        <button class="subtab" data-sub="audit">审计日志</button>
       </nav>
 
       <section id="admin-users-sec">
@@ -237,6 +238,26 @@
           </thead>
           <tbody id="admin-groups-tbody"></tbody>
         </table>
+      </section>
+
+      <section id="admin-audit-sec" class="hidden">
+        <div class="toolbar">
+          <div class="toolbar-group">
+            <div class="seg-group" id="audit-filter" role="group" aria-label="审计类型筛选">
+              <button class="seg active" data-act="all">全部</button>
+              <button class="seg" data-act="create">新增</button>
+              <button class="seg" data-act="update">修改</button>
+              <button class="seg" data-act="delete">删除</button>
+            </div>
+          </div>
+        </div>
+        <table class="pw-table hist-table">
+          <thead>
+            <tr><th>时间</th><th>动作</th><th>账号</th><th>标题</th><th>分组</th><th>操作人</th><th>说明</th></tr>
+          </thead>
+          <tbody id="admin-audit-tbody"></tbody>
+        </table>
+        <p class="audit-tip">说明：删除密码会在此生成一条「删除」记录，含操作人与账号，便于管理员审计。</p>
       </section>
 
       <div class="modal-actions">
@@ -429,6 +450,36 @@
     </div>
   </div>
 
+  <!-- 删除密码：第一步确认（风险提示） -->
+  <div id="del-confirm-modal" class="modal hidden">
+    <div class="modal-card modal-card-narrow">
+      <h2>确认删除密码</h2>
+      <div class="del-warn">
+        <p>你即将删除账号 <strong id="del-account-1"></strong> 的密码。</p>
+        <p class="muted">删除后该密码将被移入回收（软删除），并生成一条删除记录供管理员在「审计日志」中查看。此操作不可撤销。</p>
+      </div>
+      <div class="modal-actions">
+        <button id="del-confirm-cancel" class="btn ghost">取消</button>
+        <button id="del-confirm-go" class="btn danger">确认，下一步</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 删除密码：第二步确认（键入验证码） -->
+  <div id="del-type-modal" class="modal hidden">
+    <div class="modal-card modal-card-narrow">
+      <h2>输入验证码以删除</h2>
+      <p>正在删除账号：<strong id="del-account-2"></strong></p>
+      <p class="muted">请在下方输入框中键入 <code class="del-code">确认删除</code> 四个字，以完成删除。</p>
+      <input id="del-type-input" type="text" class="del-type-input" placeholder="在此输入：确认删除" autocomplete="off" />
+      <p id="del-type-hint" class="del-type-hint"></p>
+      <div class="modal-actions">
+        <button id="del-type-cancel" class="btn ghost">取消</button>
+        <button id="del-type-confirm" class="btn danger" disabled>确认删除</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 全屏等待弹窗（提交 / 解密期间显示） -->
   <div id="wait-modal" class="wait hidden" role="alert" aria-live="assertive">
     <div class="wait-card">
@@ -437,6 +488,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=6"></script>
+  <script src="/app.js?v=9"></script>
 </body>
 </html>

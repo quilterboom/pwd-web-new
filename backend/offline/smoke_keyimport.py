@@ -84,5 +84,26 @@ check(st == 400, f"导入受保护密钥 400 (got {st})")
 detail = (d.get("detail") or "") if isinstance(d, dict) else ""
 check("受口令保护" in detail, f"错误提示含'受口令保护' (detail={detail!r})")
 
+print("[6] 生成 SM2 OrgKey 并创建条目 -> 此前会因 passphrase 形参报错 500")
+st, d = call("POST", "/api/orgkeys/generate", token=token,
+             body={"name": "SM2回归密钥", "algorithm": "sm2", "group_id": gid})
+check(st == 200, f"生成 SM2 OrgKey 200 (got {st}: {d})")
+sm2_id = d.get("id")
+
+st, d = call("POST", "/api/passwords", token=token,
+             body={"title": "sm2-e2e", "algorithm": "sm2", "group_id": gid,
+                   "orgkey_id": sm2_id, "entry_password": "ep123",
+                   "secret": "SM2-中文-secret"})
+check(st == 200, f"用 SM2 OrgKey 创建条目 200 (got {st}: {d})")
+pid2 = d.get("id")
+st, d = unlock(token, pid2, "ep123")
+check(st == 200 and d.get("secret") == "SM2-中文-secret", f"SM2 OrgKey 解密读回明文匹配 (got {st}: {d.get('secret')!r})")
+
+print("[7] 导入受口令 GPG 密钥时传入正确口令 -> 期望 200（验证 passphrase 形参对 GPG 仍生效）")
+st, d = call("POST", "/api/orgkeys/import", token=token,
+             body={"name": "受保护密钥(带口令)", "algorithm": "gpg", "group_id": gid,
+                   "public_key": pub2, "private_key": priv2, "private_passphrase": "pw123"})
+check(st == 200, f"带正确口令导入受保护 GPG 密钥 200 (got {st}: {d})")
+
 print("\n结果:", "全部通过 ✅" if fails == 0 else f"{fails} 项失败 ❌")
 sys.exit(1 if fails else 0)

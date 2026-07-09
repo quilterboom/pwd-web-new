@@ -241,6 +241,20 @@ def create(
 ):
     ensure_group_access(db, user, req.group_id)
 
+    # 重复新增校验：同一分组下不允许「账号名称 + 加密方式」完全相同
+    existing = (
+        db.query(PasswordEntry)
+        .filter_by(group_id=req.group_id, algorithm=req.algorithm, deleted=False)
+        .all()
+    )
+    u_name = (req.username or "").strip().lower()
+    for r in existing:
+        if (r.username or "").strip().lower() == u_name:
+            raise HTTPException(
+                status_code=409,
+                detail=f"该分组下已存在账号「{req.username}」且加密方式相同（{req.algorithm}），请勿重复新增",
+            )
+
     fields = _encrypt_for_create(db, user, req)
     entry = PasswordEntry(
         title=(req.title or "").strip(),
@@ -482,7 +496,7 @@ def delete(
             ciphertext=entry.ciphertext,
             notes=entry.notes,
             changed_by=user.username,
-            comment="删除密码",
+            comment=f"删除密码（账号：{entry.username or entry.title or '未命名'}）",
         )
     )
     db.commit()
@@ -490,14 +504,16 @@ def delete(
 
 
 def _build_export_rows(db: Session, entries: list, plaintext: bool, passwords: dict) -> tuple:
-    """构造导出数据行。返回 (rows, skipped)。
+    """构造导出数据行。返回 (rows, skipped, failed)。
 
     - plaintext=False（加密备份）：仅含密文与元数据，无需密码，可用于迁移 / 恢复。
-    - plaintext=True：尝试用 passwords 中的解密密码还原明文；失败则该条 secret=None 并计入 skipped。
+    - plaintext=True：尝试用 passwords 中的解密密码还原明文；失败则该条 secret=None、
+      计入 skipped，并记录其账号名到 failed，供上层在明文导出时整体拒绝并提示。
     """
     groups = {g.id: g.name for g in db.query(Group).all()}
     rows = []
     skipped = 0
+    failed = []
     for e in entries:
         key_name = None
         if e.orgkey_id:
@@ -528,12 +544,14 @@ def _build_export_rows(db: Session, entries: list, plaintext: bool, passwords: d
                 except Exception:
                     decrypt_error = True
                     skipped += 1
+                    failed.append(e.username or f"#{e.id}")
             else:
                 try:
                     secret = _decrypt_entry_secret(db, e, pw)
                 except Exception:
                     decrypt_error = True
                     skipped += 1
+                    failed.append(e.username or f"#{e.id}")
             row["secret"] = secret
             row["decrypt_error"] = decrypt_error
         else:
@@ -543,7 +561,7 @@ def _build_export_rows(db: Session, entries: list, plaintext: bool, passwords: d
             row["entry_iv"] = e.entry_iv or ""
             row["orgkey_id"] = e.orgkey_id
         rows.append(row)
-    return rows, skipped
+    return rows, skipped, failed
 
 
 def _export_filename(fmt: str) -> str:
@@ -578,7 +596,15 @@ def export_passwords(
     if not entries:
         raise HTTPException(status_code=404, detail="没有可导出的可见条目")
 
-    rows, skipped = _build_export_rows(db, entries, req.plaintext, req.passwords or {})
+    rows, skipped, failed = _build_export_rows(db, entries, req.plaintext, req.passwords or {})
+
+    # 明文导出：只要有任一条目解密失败，整体拒绝导出并给出提示，避免导出残缺/空密文
+    if req.plaintext and skipped > 0:
+        names = "、".join(failed) if failed else f"{skipped} 条"
+        raise HTTPException(
+            status_code=400,
+            detail=f"有 {skipped} 条密码解密失败，无法导出明文（{names}）。请检查这些条目的解密密码是否正确。",
+        )
 
     if fmt == "csv":
         buf = io.StringIO()

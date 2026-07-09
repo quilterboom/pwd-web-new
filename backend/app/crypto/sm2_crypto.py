@@ -22,7 +22,13 @@ def encrypt(plaintext: str, public_key_hex: str) -> str:
     return base64.b64encode(ciphertext).decode("ascii")
 
 
-def decrypt(ciphertext_b64: str, private_key_hex: str) -> str:
+def decrypt(ciphertext_b64: str, private_key_hex: str, passphrase: str = None) -> str:
+    """解密 SM2 密文。
+
+    注意：本系统的 SM2 OrgKey 私钥以原始 hex 存储，不支持 passphrase 保护；
+    此处保留 ``passphrase`` 形参仅为兼容管理器对 GPG/SM2 统一调用的接口
+    （decrypt(ciphertext, private_key, passphrase=...)），该参数对 SM2 无效，直接忽略。
+    """
     c = sm2.CryptSM2(public_key="", private_key=private_key_hex)
     ciphertext = base64.b64decode(ciphertext_b64)
     plaintext = c.decrypt(ciphertext)
@@ -35,7 +41,10 @@ def encrypt_bytes(data: bytes, public_key_hex: str) -> bytes:
     return c.encrypt(data)
 
 
-def decrypt_bytes(ciphertext: bytes, private_key_hex: str) -> bytes:
-    """解密文件密文，返回原始字节。"""
+def decrypt_bytes(ciphertext: bytes, private_key_hex: str, passphrase: str = None) -> bytes:
+    """解密文件密文，返回原始字节。
+
+    与 ``decrypt`` 一致，``passphrase`` 对 SM2 无效，忽略。
+    """
     c = sm2.CryptSM2(public_key="", private_key=private_key_hex)
     return bytes(c.decrypt(ciphertext))
