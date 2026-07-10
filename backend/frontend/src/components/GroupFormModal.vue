@@ -19,6 +19,21 @@ onMounted(() => {
   }
 })
 
+// 可勾选的成员列表 = 当前可见用户（state.users）+ 本分组已有的成员（避免越权场景下丢失不可见成员）
+const memberOptions = computed(() => {
+  const base = (state.users || []).map((u) => ({ id: u.id, username: u.username }))
+  const ids = new Set(base.map((u) => u.id))
+  if (props.group && props.group.members) {
+    for (const m of props.group.members) {
+      if (!ids.has(m.id)) {
+        base.push({ id: m.id, username: m.username })
+        ids.add(m.id)
+      }
+    }
+  }
+  return base
+})
+
 async function save() {
   error.value = ''
   if (!name.value.trim()) return (error.value = '请输入分组名称')
@@ -43,20 +58,26 @@ async function save() {
 </script>
 
 <template>
-  <div class="modal" @click.self="emit('close')">
+  <div class="modal">
     <div class="modal-card">
+      <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <h2>{{ isAdd ? '新增分组' : '编辑分组：' + name }}</h2>
       <label>分组名称 *</label>
       <input v-model="name" type="text" />
       <label>描述</label>
       <input v-model="description" type="text" />
-      <label>成员</label>
-      <div class="checkbox-list">
-        <label v-for="u in state.users" :key="u.id" class="checkbox-item">
-          <input type="checkbox" :value="u.id" v-model="memberIds" /> {{ u.username }}
-        </label>
-        <span v-if="!state.users.length" style="color:#6b7280">暂无可加入的用户</span>
-      </div>
+
+      <!-- 新增分组时不展示成员内容；编辑时才显示成员管理 -->
+      <template v-if="!isAdd">
+        <label>成员</label>
+        <div class="checkbox-list">
+          <label v-for="u in memberOptions" :key="u.id" class="checkbox-item">
+            <input type="checkbox" :value="u.id" v-model="memberIds" /> {{ u.username }}
+          </label>
+          <span v-if="!memberOptions.length" style="color:#6b7280">暂无可加入的用户</span>
+        </div>
+      </template>
+
       <div v-if="error" class="error">{{ error }}</div>
       <div class="modal-actions">
         <button class="btn ghost" @click="emit('close')">取消</button>

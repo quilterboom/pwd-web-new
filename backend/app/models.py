@@ -10,9 +10,18 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 
-# 用户 <-> 分组 多对多关联表
+# 用户 <-> 分组 多对多关联表（作为「普通成员」所属的分组）
 user_groups = Table(
     "user_groups",
+    Base.metadata,
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("group_id", ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True),
+)
+
+# 用户 <-> 分组 多对多关联表（作为「管理员」可管理的分组）
+# 为空表示「超级管理员」——管理全部分组；非空表示「分组管理员」——仅管理指定的分组。
+user_admin_groups = Table(
+    "user_admin_groups",
     Base.metadata,
     Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     Column("group_id", ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True),

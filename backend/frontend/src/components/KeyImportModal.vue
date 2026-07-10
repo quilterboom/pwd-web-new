@@ -65,8 +65,9 @@ function togglePriv() {
 </script>
 
 <template>
-  <div class="modal" @click.self="emit('close')">
+  <div class="modal">
     <div class="modal-card">
+      <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <h2>导入密钥</h2>
       <label>密钥名称 *</label>
       <input v-model="name" type="text" placeholder="如：合作方公开密钥" />

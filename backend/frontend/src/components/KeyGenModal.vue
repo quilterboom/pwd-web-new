@@ -31,8 +31,9 @@ async function save() {
 </script>
 
 <template>
-  <div class="modal" @click.self="emit('close')">
+  <div class="modal">
     <div class="modal-card">
+      <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <h2>生成新密钥</h2>
       <label>密钥名称 *</label>
       <input v-model="name" type="text" placeholder="如：研发中心 GPG 主密钥" />

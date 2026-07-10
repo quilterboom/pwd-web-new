@@ -12,12 +12,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.deps import (
+    get_admin_group_ids,
     get_current_user,
     get_user_groups,
+    is_global_admin,
     require_admin,
 )
 from ..db import get_db
-from ..models import Group, History, PasswordEntry, User, user_groups
+from ..models import Group, History, PasswordEntry, User, user_groups, user_admin_groups
 from ..security import derive_password_verifier, hash_password
 
 # ---------------- 当前用户可见分组（非管理员接口） ----------------
@@ -46,16 +48,57 @@ class UserCreate(BaseModel):
     password: str
     is_admin: bool = False
     group_ids: list[int] = []
+    admin_group_ids: list[int] = []  # 仅全局管理员可指定；为空=管理全部分组
 
 
 class UserUpdate(BaseModel):
     password: Optional[str] = None
     is_admin: Optional[bool] = None
     group_ids: Optional[list[int]] = None
+    admin_group_ids: Optional[list[int]] = None
 
 
 def _user_groups_out(db: Session, user: User) -> list[dict]:
     return [{"id": g.id, "name": g.name} for g in get_user_groups(db, user)]
+
+
+def _user_admin_groups_out(db: Session, user: User) -> list[dict]:
+    gids = get_admin_group_ids(db, user)
+    if not gids:
+        return []
+    groups = db.query(Group).filter(Group.id.in_(gids)).order_by(Group.name).all()
+    return [{"id": g.id, "name": g.name} for g in groups]
+
+
+def _unlink_user_admin_group(db: Session, **where) -> None:
+    stmt = user_admin_groups.delete()
+    for col, val in where.items():
+        stmt = stmt.where(getattr(user_admin_groups.c, col) == val)
+    db.execute(stmt)
+
+
+def _set_user_admin_groups(db: Session, user: User, group_ids: list[int]) -> None:
+    """覆盖写入某用户「作为管理员可管理的分组」。"""
+    _unlink_user_admin_group(db, user_id=user.id)
+    for gid in group_ids:
+        if db.query(Group).filter_by(id=gid).first():
+            db.execute(
+                user_admin_groups.insert().values(user_id=user.id, group_id=gid)
+            )
+
+
+def _visible_user_ids(db: Session, caller: User) -> Optional[set[int]]:
+    """返回分组管理员可见的用户 id 集合；全局管理员返回 None（表示全部）。"""
+    if is_global_admin(db, caller):
+        return None
+    my_admin_ids = get_admin_group_ids(db, caller)
+    rows = db.query(User).all()
+    out: set[int] = set()
+    for u in rows:
+        u_ids = {g.id for g in u.groups} | get_admin_group_ids(db, u)
+        if u.id == caller.id or (u_ids & my_admin_ids):
+            out.add(u.id)
+    return out
 
 
 def _link_user_group(db: Session, user_id: int, group_id: int) -> None:
@@ -80,9 +123,13 @@ def _unlink_user_group(db: Session, **where) -> None:
 
 @users_router.get("")
 def list_users(
-    _: User = Depends(require_admin), db: Session = Depends(get_db)
+    caller: User = Depends(require_admin), db: Session = Depends(get_db)
 ):
     rows = db.query(User).order_by(User.username).all()
+    # 分组管理员：仅可见「与自己所管理分组有交集」的用户（含自己）
+    visible = _visible_user_ids(db, caller)
+    if visible is not None:
+        rows = [u for u in rows if u.id in visible]
     return [
         {
             "id": u.id,
@@ -90,6 +137,7 @@ def list_users(
             "is_admin": bool(u.is_admin),
             "created_at": u.created_at.isoformat() if u.created_at else None,
             "groups": _user_groups_out(db, u),
+            "admin_groups": _user_admin_groups_out(db, u),
         }
         for u in rows
     ]
@@ -108,13 +156,19 @@ def _seed_login_material(user: User, password: str) -> None:
 @users_router.post("")
 def create_user(
     req: UserCreate,
-    _: User = Depends(require_admin),
+    caller: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     if not req.username or not req.password:
         raise HTTPException(status_code=400, detail="用户名与密码均不能为空")
     if db.query(User).filter_by(username=req.username).first():
         raise HTTPException(status_code=409, detail="用户名已存在")
+
+    # 分组管理员：只能在其管理范围内操作，且无权创建其他管理员
+    caller_admin_ids = get_admin_group_ids(db, caller)
+    is_global = not caller_admin_ids  # 调用者是管理员，admin_group_ids 为空即超级管理员
+    if not is_global and req.is_admin:
+        raise HTTPException(status_code=403, detail="分组管理员无权创建其他管理员")
 
     user = User(
         username=req.username,
@@ -127,9 +181,14 @@ def create_user(
     db.commit()
     db.refresh(user)
 
-    for gid in req.group_ids:
+    group_ids = req.group_ids if is_global else [gid for gid in req.group_ids if gid in caller_admin_ids]
+    for gid in group_ids:
         if db.query(Group).filter_by(id=gid).first():
             _link_user_group(db, user.id, gid)
+
+    # 仅全局管理员可为用户指定「管理的分组」；管理员用户才写入管理分组
+    if is_global and req.is_admin and req.admin_group_ids:
+        _set_user_admin_groups(db, user, req.admin_group_ids)
     db.commit()
     return {"id": user.id, "username": user.username, "message": "created"}
 
@@ -144,6 +203,16 @@ def update_user(
     user = db.query(User).filter_by(id=uid).first()
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
+
+    caller_admin_ids = get_admin_group_ids(db, admin)
+    is_global = not caller_admin_ids
+    if not is_global:
+        # 分组管理员不能修改/保留超级管理员，也不能把任何人设为管理员
+        if is_global_admin(db, user):
+            raise HTTPException(status_code=403, detail="无权修改超级管理员")
+        if req.is_admin is True or (req.is_admin is None and user.is_admin):
+            raise HTTPException(status_code=403, detail="分组管理员无权设置其他用户为管理员")
+
     if user.id == admin.id and req.is_admin is False:
         raise HTTPException(status_code=400, detail="不能取消自己的管理员权限")
 
@@ -154,11 +223,27 @@ def update_user(
     if req.is_admin is not None:
         user.is_admin = req.is_admin
 
+    if not is_global:
+        # 分组管理员：限制分组范围，但保留自己管理范围外的现有分组（避免误删）
+        if req.group_ids is not None:
+            visible_groups = caller_admin_ids
+            existing = {g.id for g in user.groups}
+            preserve = existing - visible_groups
+            req.group_ids = list(set(req.group_ids) | preserve)
+        if req.admin_group_ids is not None:
+            req.admin_group_ids = [gid for gid in req.admin_group_ids if gid in caller_admin_ids]
+
     if req.group_ids is not None:
         _unlink_user_group(db, user_id=user.id)
         for gid in req.group_ids:
             if db.query(Group).filter_by(id=gid).first():
                 _link_user_group(db, user.id, gid)
+
+    # 管理分组：取消管理员则清空；否则按请求覆盖（仅全局管理员可写入）
+    if req.is_admin is False:
+        _set_user_admin_groups(db, user, [])
+    elif req.admin_group_ids is not None and is_global:
+        _set_user_admin_groups(db, user, req.admin_group_ids)
     db.commit()
     return {"id": user.id, "username": user.username, "message": "updated"}
 
@@ -195,9 +280,13 @@ class GroupUpdate(BaseModel):
 
 @groups_router.get("")
 def list_groups(
-    _: User = Depends(require_admin), db: Session = Depends(get_db)
+    caller: User = Depends(require_admin), db: Session = Depends(get_db)
 ):
-    rows = db.query(Group).order_by(Group.name).all()
+    if is_global_admin(db, caller):
+        rows = db.query(Group).order_by(Group.name).all()
+    else:
+        my_admin_ids = get_admin_group_ids(db, caller)
+        rows = db.query(Group).filter(Group.id.in_(my_admin_ids)).order_by(Group.name).all()
     out = []
     for g in rows:
         members = (
@@ -223,7 +312,7 @@ def list_groups(
 @groups_router.post("")
 def create_group(
     req: GroupCreate,
-    _: User = Depends(require_admin),
+    caller: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     if not req.name:
@@ -235,6 +324,10 @@ def create_group(
     db.add(group)
     db.commit()
     db.refresh(group)
+
+    # 分组管理员创建的分组自动纳入其管理范围，便于后续管理
+    if not is_global_admin(db, caller):
+        _set_user_admin_groups(db, caller, list(get_admin_group_ids(db, caller)) + [group.id])
 
     for uid in req.member_ids:
         u = db.query(User).filter_by(id=uid).first()
@@ -248,12 +341,17 @@ def create_group(
 def update_group(
     gid: int,
     req: GroupUpdate,
-    _: User = Depends(require_admin),
+    caller: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     group = db.query(Group).filter_by(id=gid).first()
     if group is None:
         raise HTTPException(status_code=404, detail="分组不存在")
+    # 分组管理员只能管理自己范围内的分组
+    if not is_global_admin(db, caller):
+        if gid not in get_admin_group_ids(db, caller):
+            raise HTTPException(status_code=403, detail="无权管理该分组")
+
     if req.name is not None and req.name != group.name:
         if db.query(Group).filter_by(name=req.name).first():
             raise HTTPException(status_code=409, detail="分组名称已存在")
@@ -261,6 +359,13 @@ def update_group(
     if req.description is not None:
         group.description = req.description
     if req.member_ids is not None:
+        # 分组管理员：仅能改动自己可见范围内的成员，保留范围外的现有成员
+        if not is_global_admin(db, caller):
+            visible = _visible_user_ids(db, caller)
+            if visible is not None:
+                existing = {u.id for u in group.members}
+                preserve = existing - visible
+                req.member_ids = list(set(req.member_ids) | preserve)
         _unlink_user_group(db, group_id=group.id)
         for uid in req.member_ids:
             if db.query(User).filter_by(id=uid).first():
@@ -272,12 +377,14 @@ def update_group(
 @groups_router.delete("/{gid}")
 def delete_group(
     gid: int,
-    _: User = Depends(require_admin),
+    caller: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     group = db.query(Group).filter_by(id=gid).first()
     if group is None:
         raise HTTPException(status_code=404, detail="分组不存在")
+    if not is_global_admin(db, caller) and gid not in get_admin_group_ids(db, caller):
+        raise HTTPException(status_code=403, detail="无权删除该分组")
     bound_pw = db.query(PasswordEntry).filter_by(group_id=gid, deleted=False).count()
     if bound_pw:
         raise HTTPException(
@@ -295,7 +402,7 @@ def delete_group(
 def list_audit(
     action: Optional[str] = None,
     limit: int = 500,
-    _: User = Depends(require_admin),
+    caller: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """管理员审计日志：返回修改记录（含删除），仅管理员可访问。
@@ -303,10 +410,14 @@ def list_audit(
     - 不传 action：返回全部记录（新增 / 修改 / 删除）。
     - 传 action=delete：仅返回删除密码的记录，便于管理员集中核查删除行为。
     返回的每条记录都带有分组名称（group_name），便于跨分组审计。
+    - 分组管理员：仅返回其管理分组范围内的记录。
     """
     if limit <= 0 or limit > 2000:
         limit = 500
     q = db.query(History)
+    if not is_global_admin(db, caller):
+        my_admin_ids = get_admin_group_ids(db, caller)
+        q = q.filter(History.group_id.in_(my_admin_ids))
     if action:
         q = q.filter_by(action=action)
     q = q.order_by(History.changed_at.desc()).limit(limit)

@@ -22,6 +22,8 @@ const editingGroup = ref(null)
 
 async function loadUsers() {
   users.value = await api('/api/admin/users')
+  // 同步给全局 state，供「新增/编辑分组」弹框的成员列表使用
+  state.users = users.value
 }
 async function loadGroups() {
   groups.value = await api('/api/admin/groups')
@@ -86,8 +88,9 @@ async function deleteGroup(id) {
 </script>
 
 <template>
-  <div class="modal" @click.self="emit('close')">
+  <div class="modal">
     <div class="modal-card wide">
+      <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <h2>系统管理</h2>
       <nav class="subtabs">
         <button class="subtab" :class="{ active: subtab === 'users' }" @click="switchSub('users')">用户</button>
@@ -110,7 +113,16 @@ async function deleteGroup(id) {
           <tbody>
             <tr v-for="u in users" :key="u.id">
               <td>{{ u.username }}</td>
-              <td>{{ u.is_admin ? '是' : '否' }}</td>
+              <td>
+                <span v-if="u.is_admin">是</span>
+                <span v-else>否</span>
+                <div v-if="u.is_admin" class="admin-scope">
+                  <template v-if="u.admin_groups && u.admin_groups.length">
+                    管理：{{ u.admin_groups.map((g) => g.name).join('、') }}
+                  </template>
+                  <template v-else>管理：全部分组</template>
+                </div>
+              </td>
               <td>{{ u.groups.map((g) => g.name).join('、') || '—' }}</td>
               <td>
                 <div class="ops">

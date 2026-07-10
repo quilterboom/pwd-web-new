@@ -228,8 +228,9 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="modal" @click.self="emit('close')">
+  <div class="modal">
     <div class="modal-card">
+      <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <h2>{{ isAdd ? '新增密码' : (props.entry && props.entry.needs_password ? '编辑密码（需先解密）' : '编辑密码') }}</h2>
 
       <!-- 编辑锁定区 -->

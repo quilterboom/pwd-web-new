@@ -38,8 +38,9 @@ async function save() {
 </script>
 
 <template>
-  <div class="modal" @click.self="emit('close')">
+  <div class="modal">
     <div class="modal-card">
+      <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <h2>修改登录密码</h2>
       <p class="modal-sub">为保障账户安全，请先验证当前密码，再设置新密码。</p>
       <label>当前密码 *</label>

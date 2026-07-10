@@ -9,6 +9,7 @@ from ..core.deps import (
     ensure_group_access,
     get_current_user,
     get_user_group_ids,
+    require_admin,
 )
 from ..crypto import manager
 from ..db import get_db
@@ -131,13 +132,15 @@ def list_orgkeys(
     group_id: int | None = Query(default=None),
     algorithm: str | None = Query(default=None),
 ):
-    """列出当前用户所属组织（或指定组织）下的密钥；可按 algorithm 过滤（gpg/sm2）。"""
+    """列出当前用户所属组织（或指定组织）下的密钥；可按 algorithm 过滤（gpg/sm2）。
+
+    普通用户仅见所属分组；分组管理员仅见其管理/所属分组；超级管理员见全部分组。
+    """
     q = db.query(OrgKey)
-    if not user.is_admin:
-        visible = get_user_group_ids(db, user)
-        if not visible:
-            return []
-        q = q.filter(OrgKey.group_id.in_(visible))
+    visible = get_user_group_ids(db, user)
+    if not visible:
+        return []
+    q = q.filter(OrgKey.group_id.in_(visible))
     if group_id is not None:
         q = q.filter(OrgKey.group_id == group_id)
     if algorithm is not None:
@@ -227,7 +230,7 @@ def export_orgkey(
     kid: int,
     kind: str = Query(default="public", pattern="^(public|private)$"),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     """导出公钥或私钥为文本/二进制附件下载。"""
     rec = db.query(OrgKey).filter_by(id=kid).first()
@@ -267,7 +270,7 @@ def export_orgkey(
 
 
 @orgkeys_router.delete("/{kid}")
-def delete_orgkey(kid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def delete_orgkey(kid: int, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     rec = db.query(OrgKey).filter_by(id=kid).first()
     if rec is None:
         raise HTTPException(status_code=404, detail="密钥不存在")

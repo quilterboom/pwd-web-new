@@ -63,8 +63,9 @@ function copySecret() {
 </script>
 
 <template>
-  <div class="modal" @click.self="emit('close')">
+  <div class="modal">
     <div class="modal-card">
+      <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <h2>查看：{{ entry ? entry.username : '' }}</h2>
       <div class="kv"><span>账号</span><b>{{ entry ? entry.username : '—' }}</b></div>
       <div class="kv" v-if="entry">

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { state, loadOrgKeys, requestDelete, showToast, showError, apiBlob, triggerDownload, filenameFromDisposition } from '../store'
 import { algoBadge, groupName, fmtTime } from '../utils'
 import KeyGenModal from './KeyGenModal.vue'
@@ -9,8 +9,6 @@ const groupFilter = ref('0')
 const search = ref('')
 const showGen = ref(false)
 const showImport = ref(false)
-
-onMounted(() => loadOrgKeys())
 
 const filtered = computed(() => {
   let rows = state.keys
@@ -71,7 +69,7 @@ function onDelete(id) {
     <table class="pw-table">
       <thead>
         <tr>
-          <th>名称</th><th>算法</th><th>分组</th><th>指纹</th><th>私钥</th><th>创建时间</th><th>创建人</th><th>操作</th>
+          <th>名称</th><th>算法</th><th>分组</th><th>指纹</th><th>私钥</th><th>创建时间</th><th>创建人</th><th v-if="state.isAdmin">操作</th>
         </tr>
       </thead>
       <tbody>
@@ -83,7 +81,7 @@ function onDelete(id) {
           <td>{{ k.has_private ? '✓ 有' : '— 无' }}</td>
           <td>{{ fmtTime(k.created_at) }}</td>
           <td>{{ k.created_by || '' }}</td>
-          <td>
+          <td v-if="state.isAdmin">
             <div class="ops">
               <button class="btn ghost small" @click="exportKey(k.id, 'public')">导出公钥</button>
               <button v-if="k.has_private" class="btn ghost small" @click="exportKey(k.id, 'private')">导出私钥</button>
@@ -92,7 +90,7 @@ function onDelete(id) {
           </td>
         </tr>
         <tr v-if="!filtered.length && state.keys.length">
-          <td colspan="8" style="color:#6b7280">无匹配结果</td>
+          <td :colspan="state.isAdmin ? 8 : 7" style="color:#6b7280">无匹配结果</td>
         </tr>
       </tbody>
     </table>

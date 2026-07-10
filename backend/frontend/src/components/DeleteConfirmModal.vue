@@ -35,8 +35,9 @@ function cancel() {
 
 <template>
   <!-- 第一步：风险提示 -->
-  <div v-if="target && step === 1" class="modal" @click.self="cancel">
+  <div v-if="target && step === 1" class="modal">
     <div class="modal-card modal-card-narrow">
+      <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="cancel">✕</button>
       <h2>确认删除</h2>
       <div class="del-warn">
         <p>你即将删除<span>{{ target.type === 'key' ? '密钥' : '账号' }}</span> <strong>{{ target.name }}</strong>。</p>
@@ -50,8 +51,9 @@ function cancel() {
   </div>
 
   <!-- 第二步：键入验证码 -->
-  <div v-if="target && step === 2" class="modal" @click.self="cancel">
+  <div v-if="target && step === 2" class="modal">
     <div class="modal-card modal-card-narrow">
+      <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="cancel">✕</button>
       <h2>输入验证码以删除</h2>
       <p>正在删除{{ target.type === 'key' ? '密钥' : '账号' }}：<strong>{{ target.name }}</strong></p>
       <p class="muted">请在下方输入框中键入 <code class="del-code">确认删除</code> 四个字，以完成删除。</p>

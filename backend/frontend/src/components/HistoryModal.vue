@@ -18,8 +18,9 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="modal" @click.self="emit('close')">
+  <div class="modal">
     <div class="modal-card wide">
+      <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <h2>修改记录</h2>
       <table class="hist-table">
         <thead>

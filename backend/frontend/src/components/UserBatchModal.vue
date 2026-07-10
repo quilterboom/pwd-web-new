@@ -74,8 +74,9 @@ async function upload() {
 </script>
 
 <template>
-  <div class="modal" @click.self="emit('close')">
+  <div class="modal">
     <div class="modal-card modal-card-wide">
+      <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <div class="modal-head">
         <h2>📥 批量新增用户</h2>
         <p class="modal-sub">下载 Excel 或 CSV 模板 → 填写后上传，支持部分失败回执。</p>

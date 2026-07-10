@@ -9,6 +9,7 @@ export const state = reactive({
   token: getToken(),
   user: getUser(),
   isAdmin: false,
+  isGlobalAdmin: false, // 是否超级管理员（is_admin 且未限定管理分组）；分组管理员为 false
   groups: [], // 当前用户可见分组
   users: [], // 管理员视角下的全部用户
   entries: [], // 密码列表
@@ -64,6 +65,7 @@ export function doLogout() {
   state.token = ''
   state.user = ''
   state.isAdmin = false
+  state.isGlobalAdmin = false
   state.groups = []
   state.entries = []
   state.keys = []
@@ -76,6 +78,7 @@ export async function refreshMe() {
   const m = await apiMe()
   state.user = m.username
   state.isAdmin = !!m.is_admin
+  state.isGlobalAdmin = !!m.is_global_admin
   state.groups = m.groups || []
   setUser(m.username)
 }

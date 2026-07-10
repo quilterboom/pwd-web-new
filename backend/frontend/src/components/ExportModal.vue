@@ -59,8 +59,9 @@ async function doExport() {
 </script>
 
 <template>
-  <div class="modal" @click.self="emit('close')">
+  <div class="modal">
     <div class="modal-card modal-card-export">
+      <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <div class="modal-head">
         <h2>📤 批量导出密码</h2>
         <p class="modal-sub">将所选密码以明文形式导出，请妥善保管导出文件。</p>

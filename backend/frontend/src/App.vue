@@ -15,13 +15,16 @@ const showChangePw = ref(false)
 
 async function enterApp() {
   await loadKeysStatus()
-  if (state.currentTab === 'key') await loadOrgKeys()
+  // 两套数据都预加载，保证首次切换到任一标签都有数据
   await loadEntries()
+  await loadOrgKeys()
 }
 
 function switchTab(tab) {
   state.currentTab = tab
+  // 每次切换标签都重新向服务端请求对应数据（v-show 常驻挂载，不会因重挂载而自动拉取）
   if (tab === 'key') loadOrgKeys()
+  else loadEntries()
 }
 
 function onLogout() {

@@ -19,6 +19,7 @@
 ## 关键模块
 - `routers/`：`auth.py`(begin/verify/legacy/change-password) `admin.py` `keys.py` `passwords.py`(含 `/template`·`/import` 须排在 `/{pid}` 前) `users_batch.py` `history.py`。
 - `crypto/gpg_crypto.py` 顶部 stub `imghdr`（Py3.13 移除）；`core/deps.py` 权限核心 `get_current_user`/`require_admin`/`ensure_group_access`。
+- **管理员双形态（2026-07-10 改）**：`User.is_admin=True` 但 `user_admin_groups` 关联表为空 = **超级管理员**（见全部分组+所有用户+审计全量）；`is_admin=True` 且有 `user_admin_groups` 记录 = **分组管理员**（仅见「所属分组 ∪ 管理的分组」、仅管范围内用户/分组、不可创建/改其他管理员、新建分组自动入其管理范围）。可见性闸门统一是 `deps.get_user_groups`（密码/密钥/导出/审计全走它）→ 改这里即改所有数据隔离。`/api/auth/me` 回 `is_global_admin`(=`is_admin and not admin_groups`) 供前端显隐管理员开关。`UserFormModal` 管理员下可多选「管理的分组」(`admin_group_ids`)；非全局管理员用户看不到该控件。
 
 ## ⚠️ 易踩的坑（保命）
 - **路由顺序**：本 Starlette 版本 `{pid}:int` 先匹配路径再校验 int，`template`/`import` 等非 int 段不回退直接 422。同前缀静态路由必须定义在 `@router.get("/{pid}")` 之前。

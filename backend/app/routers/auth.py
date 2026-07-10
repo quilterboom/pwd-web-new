@@ -6,7 +6,7 @@ import os
 import secrets
 import time
 
-from ..core.deps import get_current_user, get_user_groups
+from ..core.deps import get_current_user, get_user_groups, is_global_admin
 from ..db import get_db
 from ..models import User
 from ..security import (
@@ -135,7 +135,12 @@ def login_verify(req: LoginVerifyRequest, request: Request, db: Session = Depend
 @router.get("/me")
 def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     groups = [{"id": g.id, "name": g.name} for g in get_user_groups(db, user)]
-    return {"username": user.username, "is_admin": bool(user.is_admin), "groups": groups}
+    return {
+        "username": user.username,
+        "is_admin": bool(user.is_admin),
+        "is_global_admin": is_global_admin(db, user),
+        "groups": groups,
+    }
 
 
 # ────────── 自助修改登录密码（所有登录用户可用）──────────
