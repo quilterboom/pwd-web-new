@@ -1,12 +1,13 @@
 import csv
 import io
 import json
+import os
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,7 @@ from ..core.deps import (
     ensure_group_access,
     get_current_user,
     get_user_group_ids,
+    require_admin,
     visibility_filter,
 )
 from ..crypto import entry_cipher, manager
@@ -25,6 +27,9 @@ router = APIRouter(
     tags=["passwords"],
     dependencies=[Depends(get_current_user)],
 )
+
+# 条目支持的加密方式：symmetric=仅内层 SM4；gpg/sm2=外层非对称 + 内层 SM4
+VALID_ALGOS = ("symmetric", "gpg", "sm2")
 
 
 class CreateRequest(BaseModel):
@@ -287,6 +292,368 @@ def create(
     return {"id": entry.id, "message": "created"}
 
 
+
+# ────────────────────── 批量导入密码：模板下载 + 上传解析 ──────────────────────
+# 设计：加密方式 / 加密密码（解密密码）/ 密钥 在「导入页面」上统一选择，对所有行生效；
+# 每一行只需提供 用户名 / 密码明文（真实密码）/ 备注 / 所属分组。
+# 与用户批量导入一致：逐行解析、逐行创建，某行失败不影响其它行，并以逐行报告回执。
+
+PWD_IMPORT_HEADERS = ["用户名", "密码明文", "备注", "所属分组"]
+
+
+def _xlsx_bytes_passwords() -> bytes:
+    """用 openpyxl 渲染密码导入模板到 bytes。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "密码批量导入模板"
+
+    bold = Font(bold=True)
+    head_fill = PatternFill(start_color="FFEAF2FF", end_color="FFEAF2FF", fill_type="solid")
+    center = Alignment(horizontal="center", vertical="center")
+
+    ws.cell(row=1, column=1, value="使用说明").font = Font(bold=True, color="FF2563EB")
+    instructions = [
+        "1) 第 1 行为使用说明，解析时会忽略；请勿在表头上方插入空行。",
+        "2) 第 2 行为表头：用户名 / 密码明文 / 备注 / 所属分组。",
+        "3) 第 3 行起为示例数据，仅作演示；上传前可整行删除。",
+        "4) 「密码明文」即你要保存的真实账号密码 / 密钥本身；它与导入页面填写的",
+        "   「加密密码（解密密码）」是两回事 —— 加密密码仅用于解锁本批导入的条目。",
+        "5) 「所属分组」须是系统里已存在的分组名；不存在则该行报错。",
+        "6) 加密方式 / 加密密码 / 密钥在导入页面上统一选择，对所有行生效。",
+    ]
+    for i, line in enumerate(instructions, start=2):
+        ws.cell(row=i, column=1, value=line)
+
+    note_end = 1 + len(instructions)
+    body_start = note_end + 3  # 表头行
+
+    for col_idx, header in enumerate(PWD_IMPORT_HEADERS, start=1):
+        c = ws.cell(row=body_start, column=col_idx, value=header)
+        c.font = bold
+        c.fill = head_fill
+        c.alignment = center
+
+    examples = [
+        ["alice", "Alice@2026", "示例账号", "研发部"],
+        ["bob", "BobSecret!9", "示例账号2", "测试组"],
+    ]
+    for r, row in enumerate(examples, start=body_start + 1):
+        for c_idx, val in enumerate(row, start=1):
+            ws.cell(row=r, column=c_idx, value=val).alignment = Alignment(vertical="center")
+
+    for col_idx, header in enumerate(PWD_IMPORT_HEADERS, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(14, len(header) * 2 + 4)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _csv_bytes_passwords() -> bytes:
+    """CSV 形式的备选模板（无 excel 环境也能下载）。"""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["# 密码批量导入模板（# 开头的行作为说明，解析时会被忽略）"])
+    writer.writerow(["# 表头：用户名 / 密码明文 / 备注 / 所属分组"])
+    writer.writerow(PWD_IMPORT_HEADERS)
+    writer.writerow(["alice", "Alice@2026", "示例账号", "研发部"])
+    writer.writerow(["bob", "BobSecret!9", "示例账号2", "测试组"])
+    # 加 UTF-8 BOM 让 Excel 直接打开不乱码
+    return ("\ufeff" + buf.getvalue()).encode("utf-8")
+
+
+@router.get("/template")
+def download_password_template(
+    fmt: str = "xlsx",
+    _: User = Depends(get_current_user),
+):
+    """下载批量导入密码的模板。
+
+    - ``fmt=xlsx``（默认）：返回 .xlsx
+    - ``fmt=csv``         ：返回 .csv（含 UTF-8 BOM）
+    """
+    fmt = (fmt or "xlsx").lower()
+    if fmt == "xlsx":
+        data = _xlsx_bytes_passwords()
+        filename = "密码批量导入模板.xlsx"
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif fmt == "csv":
+        data = _csv_bytes_passwords()
+        filename = "密码批量导入模板.csv"
+        media = "text/csv; charset=utf-8"
+    else:
+        raise HTTPException(status_code=400, detail="fmt 仅支持 xlsx / csv")
+
+    quoted = quote(filename)
+    headers = {
+        "Content-Disposition": (
+            f"attachment; filename=\"password_import_template.{fmt}\"; filename*=UTF-8''{quoted}"
+        )
+    }
+    return StreamingResponse(io.BytesIO(data), media_type=media, headers=headers)
+
+
+# ────────────────────── 上传解析 ──────────────────────
+
+def _norm_pwd_row(row: dict) -> tuple:
+    """把一行数据归一化成 (username, secret, notes, group_names)。"""
+    username = (row.get("username") or "").strip()
+    secret = (row.get("secret") or "").strip()  # 密码明文（真实密码）
+    notes = (row.get("notes") or "").strip()
+    group_raw = (row.get("group") or "").strip()
+    group_names = [g.strip() for g in group_raw.split(",") if g.strip()]
+    return username, secret, notes, group_names
+
+
+def _read_xlsx_passwords(content: bytes) -> List[dict]:
+    """从 xlsx bytes 提取数据行；返回 dict 列表（key 是中文表头映射字段）。"""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    ws = wb.active
+    headers = None
+    out: List[dict] = []
+    for r in ws.iter_rows(values_only=True):
+        row = [c for c in r if c is not None]
+        if not row:
+            continue
+        first = str(row[0]).strip()
+        # 跳过说明行
+        if first.startswith("#") or first.startswith("使用说明") or first.startswith("下方为"):
+            continue
+        if headers is None:
+            raw_headers = [str(x).strip() for x in row]
+            if "用户名" not in raw_headers:
+                continue
+            headers = {"username": "用户名", "secret": "密码明文", "notes": "备注", "group": "所属分组"}
+            continue
+        full = list(r)
+        cells = {}
+        for key, header_name in headers.items():
+            try:
+                col_idx = raw_headers.index(header_name)
+            except ValueError:
+                continue
+            cells[key] = "" if col_idx >= len(full) or full[col_idx] is None else str(full[col_idx])
+        out.append(cells)
+    wb.close()
+    return out
+
+
+def _read_csv_passwords(content: bytes) -> List[dict]:
+    """从 csv bytes 提取数据行。"""
+    text = content.decode("utf-8-sig", errors="replace")
+    reader = csv.reader(io.StringIO(text))
+    headers_map = {"username": "用户名", "secret": "密码明文", "notes": "备注", "group": "所属分组"}
+    headers = None
+    out: List[dict] = []
+    for row in reader:
+        if not row or all((c or "").strip() == "" for c in row):
+            continue
+        first = (row[0] or "").strip()
+        if first.startswith("#"):
+            continue
+        if headers is None:
+            if "用户名" not in row:
+                continue
+            headers = list(row)
+            continue
+        cells = {}
+        for key, header_name in headers_map.items():
+            try:
+                col_idx = headers.index(header_name)
+            except ValueError:
+                continue
+            cells[key] = (row[col_idx].strip() if col_idx < len(row) else "")
+        out.append(cells)
+    return out
+
+
+class PasswordImportRow(BaseModel):
+    row: int
+    username: str
+    status: str  # "created" | "skipped" | "error"
+    message: str = ""
+
+
+class PasswordImportResponse(BaseModel):
+    total: int
+    created: int
+    skipped: int
+    errored: int
+    rows: List[PasswordImportRow]
+
+
+@router.post("/import", response_model=PasswordImportResponse)
+async def import_passwords(
+    file: UploadFile = File(...),
+    algorithm: str = Form("symmetric"),
+    entry_password: str = Form(""),
+    orgkey_id: Optional[int] = Form(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """批量导入密码：上传 .xlsx / .csv，按页面选择的加密方式 / 加密密码 / 密钥逐行创建。
+
+    - ``algorithm``    ：加密方式（symmetric / gpg / sm2），对所有行生效
+    - ``entry_password``：加密密码（即「解密密码」），对所有行生效，必填
+    - ``orgkey_id``    ：gpg / sm2 时可选的 OrgKey（与每行分组须匹配，否则该行报错）
+    """
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    max_bytes = int(os.getenv("BATCH_UPLOAD_MAX_BYTES", "10485760"))  # 默认 10MB
+    if len(raw) > max_bytes:
+        raise HTTPException(status_code=413, detail="上传文件过大（上限 10MB）")
+
+    fname = (file.filename or "").lower()
+    if fname.endswith(".xlsx"):
+        try:
+            data_rows = _read_xlsx_passwords(raw)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"无法解析 xlsx：{e}")
+    elif fname.endswith(".csv"):
+        try:
+            data_rows = _read_csv_passwords(raw)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"无法解析 csv：{e}")
+    else:
+        raise HTTPException(status_code=400, detail="仅支持 .xlsx 或 .csv 文件")
+
+    if not data_rows:
+        raise HTTPException(
+            status_code=400,
+            detail="未找到可导入的数据行；请检查表头是否为「用户名 / 密码明文 / 备注 / 所属分组」",
+        )
+
+    if not entry_password:
+        raise HTTPException(status_code=400, detail="请先在页面选择「加密密码（解密密码）」再导入")
+
+    algo = (algorithm or "symmetric").lower()
+    if algo not in VALID_ALGOS:
+        raise HTTPException(status_code=400, detail=f"不支持的加密方式: {algo}")
+
+    results: List[PasswordImportRow] = []
+    created = skipped = errored = 0
+
+    for idx, raw_row in enumerate(data_rows, start=1):
+        username, secret, notes, group_names = _norm_pwd_row(raw_row)
+        if not username and not secret:
+            results.append(PasswordImportRow(row=idx, username="", status="skipped", message="空行已跳过"))
+            skipped += 1
+            continue
+
+        if not username:
+            results.append(PasswordImportRow(row=idx, username="", status="error", message="用户名为空"))
+            errored += 1
+            continue
+        if not secret:
+            results.append(PasswordImportRow(row=idx, username=username, status="error", message="密码明文为空"))
+            errored += 1
+            continue
+
+        # 分组解析：取第一个存在的分组作为目标；全部缺失则报错
+        group_ids: List[int] = []
+        missing: List[str] = []
+        for n in group_names:
+            g = db.query(Group).filter_by(name=n).first()
+            if g:
+                group_ids.append(g.id)
+            else:
+                missing.append(n)
+        if not group_ids:
+            results.append(PasswordImportRow(
+                row=idx, username=username, status="error",
+                message=f"分组 [{', '.join(group_names)}] 不存在",
+            ))
+            errored += 1
+            continue
+
+        group_id = group_ids[0]
+        try:
+            ensure_group_access(db, user, group_id)
+        except HTTPException:
+            results.append(PasswordImportRow(
+                row=idx, username=username, status="error", message="无权访问目标分组",
+            ))
+            errored += 1
+            continue
+
+        # 重复校验：同一分组下「账号 + 加密方式」相同则跳过
+        if db.query(PasswordEntry).filter_by(
+            group_id=group_id, algorithm=algo, username=username, deleted=False
+        ).first():
+            results.append(PasswordImportRow(
+                row=idx, username=username, status="error",
+                message="该分组下已存在相同账号与加密方式",
+            ))
+            errored += 1
+            continue
+
+        req = CreateRequest(
+            username=username,
+            secret=secret,
+            notes=notes,
+            group_id=group_id,
+            algorithm=algo,
+            entry_password=entry_password,
+            orgkey_id=orgkey_id if algo != "symmetric" else None,
+        )
+        try:
+            fields = _encrypt_for_create(db, user, req)
+        except HTTPException as e:
+            results.append(PasswordImportRow(row=idx, username=username, status="error", message=e.detail))
+            errored += 1
+            continue
+
+        entry = PasswordEntry(
+            title="",
+            username=username,
+            notes=notes,
+            group_id=group_id,
+            created_by=user.username,
+            updated_by=user.username,
+            **fields,
+        )
+        db.add(entry)
+        try:
+            db.flush()
+        except Exception as e:
+            db.rollback()
+            results.append(PasswordImportRow(row=idx, username=username, status="error", message=f"数据库写入失败：{e}"))
+            errored += 1
+            continue
+
+        db.add(History(
+            password_id=entry.id,
+            group_id=group_id,
+            action="create",
+            title="",
+            username=username,
+            algorithm=algo,
+            ciphertext=entry.ciphertext,
+            notes=notes,
+            changed_by=user.username,
+            comment="批量导入",
+        ))
+        db.commit()
+        created += 1
+        msg = "已创建" + (f"（已忽略不存在分组：{', '.join(missing)}）" if missing else "")
+        results.append(PasswordImportRow(row=idx, username=username, status="created", message=msg))
+
+    return PasswordImportResponse(
+        total=len(data_rows),
+        created=created,
+        skipped=skipped,
+        errored=errored,
+        rows=results,
+    )
+
 @router.get("/{pid}")
 def get_one(
     pid: int,
@@ -396,7 +763,7 @@ def update(
     else:
         new_secret = current_secret
 
-    if target_algo not in ("symmetric", "gpg", "sm2"):
+    if target_algo not in VALID_ALGOS:
         raise HTTPException(status_code=400, detail=f"不支持的加密方式: {target_algo}")
 
     # ---- 维持旧式（纯 GPG/SM2，无解密密码层）----
@@ -574,7 +941,7 @@ def _export_filename(fmt: str) -> str:
 def export_passwords(
     req: ExportRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     """批量导出所选密码。
 
@@ -661,3 +1028,4 @@ def export_passwords(
     ascii_name = f"password_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ 'csv' if fmt == 'csv' else 'json' }"
     disposition = f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(fname)}'
     return Response(content=content, media_type=media_type, headers={"Content-Disposition": disposition})
+

@@ -14,6 +14,7 @@ from ..security import (
     create_token,
     derive_password_verifier,
     expected_proof,
+    hash_password,
     make_login_challenge,
     store_login_challenge,
     verify_password,
@@ -135,3 +136,79 @@ def login_verify(req: LoginVerifyRequest, request: Request, db: Session = Depend
 def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     groups = [{"id": g.id, "name": g.name} for g in get_user_groups(db, user)]
     return {"username": user.username, "is_admin": bool(user.is_admin), "groups": groups}
+
+
+# ────────── 自助修改登录密码（所有登录用户可用）──────────
+#
+# 复用 SCRAM-SM3 挑战-响应校验「当前密码」（零明文），校验通过后再写入新密码。
+# 同时更新 pw_salt / pw_verifier（SCRAM 凭据）与 hashed_password（bcrypt 旧路径兼容），
+# 确保两种登录方式都指向新密码。legacy 用户（pw_verifier 为空）可用 current_password 明文兜底校验。
+
+class ChangePasswordVerifyRequest(BaseModel):
+    nonce: str = ""
+    proof: str = ""                 # SCRAM-SM3 证明（优先）
+    current_password: str = ""      # legacy 兜底：仅当 pw_verifier 为空时可用
+    new_password: str
+
+
+@router.post("/change-password/begin")
+def change_password_begin(
+    user: User = Depends(get_current_user),
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    """下发一次性挑战（salt + nonce），供前端用「当前密码」计算 SCRAM 证明。"""
+    if request is not None:
+        _login_rate_limit(request)
+    if not user.pw_verifier:
+        # 尚未启用 SCRAM：返回特殊标记，前端可引导用 current_password 明文路径
+        return {"username": user.username, "salt": "", "nonce": "", "iter": 0, "mode": "legacy"}
+    chal = make_login_challenge()
+    store_login_challenge(user.username, chal["nonce"])
+    return {
+        "username": user.username,
+        "salt": user.pw_salt,
+        "nonce": chal["nonce"],
+        "iter": chal["iter"],
+        "mode": "scram",
+    }
+
+
+@router.post("/change-password/verify")
+def change_password_verify(
+    req: ChangePasswordVerifyRequest,
+    user: User = Depends(get_current_user),
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    """校验「当前密码」后写入新密码。本端点基于已登录身份，仅能修改自己的密码。"""
+    if request is not None:
+        _login_rate_limit(request)
+
+    npw = req.new_password or ""
+    if len(npw) < 8:
+        raise HTTPException(status_code=400, detail="新密码长度至少为 8 位")
+    if npw == (req.current_password or ""):
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+
+    # 1) 校验当前密码身份
+    authed = False
+    if req.proof and user.pw_verifier:
+        if not consume_login_challenge(user.username, req.nonce):
+            raise HTTPException(status_code=401, detail="验证挑战已失效，请重试")
+        expected = expected_proof(user.pw_verifier, req.nonce)
+        authed = secrets.compare_digest(expected.lower(), (req.proof or "").lower())
+    elif req.current_password:
+        # legacy 兜底：直接比对 bcrypt 哈希
+        authed = verify_password(req.current_password, user.hashed_password)
+
+    if not authed:
+        raise HTTPException(status_code=401, detail="当前密码错误")
+
+    # 2) 写入新密码（SCRAM 凭据 + bcrypt 哈希同步更新）
+    new_salt = secrets.token_bytes(16).hex()
+    user.pw_salt = new_salt
+    user.pw_verifier = derive_password_verifier(npw, new_salt)
+    user.hashed_password = hash_password(npw)
+    db.commit()
+    return {"ok": True, "message": "密码已更新"}

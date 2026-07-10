@@ -294,6 +294,9 @@ function enterApp() {
   $("current-user").textContent = "👤 " + state.user + (state.isAdmin ? "（管理员）" : "");
   if (state.isAdmin) $("admin-btn").classList.remove("hidden");
   else $("admin-btn").classList.add("hidden");
+  // 密码导出属于高风险操作，仅管理员可用：非管理员直接隐藏「导出」按钮
+  if (state.isAdmin) $("export-btn").classList.remove("hidden");
+  else $("export-btn").classList.add("hidden");
   loadKeysStatus();
   loadEntries();
 }
@@ -471,6 +474,17 @@ function toggleEntryReveal() {
   $("f-entry-reveal").textContent = show ? "隐藏" : "显示";
 }
 
+/* 编辑解锁成功后：把「解密密码」框锁为只读，禁止当场修改（查看/修改已要求先输入此密码）。 */
+function lockEntryPasswordField() {
+  const inp = $("f-entry-password");
+  inp.disabled = true;
+  inp.readOnly = true;
+  inp.title = "解密成功后已锁定，不可修改；如需更改请使用下方「新解密密码」";
+  const rev = $("f-entry-reveal");
+  rev.disabled = true;
+  rev.textContent = "🔒已锁定";
+}
+
 /* ---------- 表单弹窗（新增 / 编辑） ---------- */
 // 编辑模式下「未成功解密」时，除「取消」外，下方表单的所有字段都置灰；
 // 但锁框自身的「解密密码」输入框与「解密并继续」按钮必须保持可用，否则无法解锁；
@@ -517,6 +531,12 @@ function openAdd() {
   $("f-notes").value = "";
   $("f-comment").value = "";
   $("f-group").disabled = false;
+  // 新增场景：解密密码框必须可编辑（复位上一次编辑遗留的只读/锁定态）
+  $("f-entry-password").disabled = false;
+  $("f-entry-password").readOnly = false;
+  $("f-entry-password").title = "";
+  $("f-entry-reveal").disabled = false;
+  $("f-entry-reveal").textContent = "显示";
   $("form-lock").classList.add("hidden");
   $("form-save").disabled = false;
   fillGroupSelect("f-group", null);
@@ -597,6 +617,9 @@ async function unlockEdit() {
     $("f-entry-password").value = pw; // 记住当前密码，保存时作为 entry_password 使用
     $("form-lock").classList.add("hidden");
     setFormEditLocked(false);
+    // 已解密：把「解密密码」框锁为只读 —— 查看/修改时必须先输入此密码才能解锁，
+    // 解锁后该值即本条目当前解密密码，禁止当场修改（避免与已解密明文不一致）。
+    lockEntryPasswordField();
     $("f-username").focus();
   } catch (e) {
     // 解密失败：保留锁框 + 下方面板继续置灰
@@ -994,6 +1017,152 @@ async function doExport() {
   }
 }
 
+/* ---------- 批量导入密码 ---------- */
+function openImport() {
+  $("pw-import-file").value = "";
+  $("pw-import-entry-pw").value = "";
+  $("pw-import-entry-pw").type = "password";
+  $("pw-import-pw-reveal").textContent = "显示";
+  $("pw-import-algorithm").value = "symmetric";
+  $("pw-import-error").textContent = "";
+  $("pw-import-summary").classList.add("hidden");
+  $("pw-import-summary").textContent = "";
+  $("pw-import-results").classList.add("hidden");
+  $("pw-import-results").innerHTML = "";
+  $("pw-import-go").disabled = true;
+  loadImportOrgkeys();
+  $("pw-import-modal").classList.remove("hidden");
+}
+
+function closeImport() {
+  $("pw-import-modal").classList.add("hidden");
+}
+
+function onImportFileChange(ev) {
+  $("pw-import-go").disabled = !(ev.target.files && ev.target.files.length > 0);
+  // 重置上一次回执
+  $("pw-import-summary").classList.add("hidden");
+  $("pw-import-summary").textContent = "";
+  $("pw-import-results").classList.add("hidden");
+  $("pw-import-results").innerHTML = "";
+  $("pw-import-error").textContent = "";
+}
+
+async function loadImportOrgkeys() {
+  const sel = $("pw-import-orgkey");
+  const algo = $("pw-import-algorithm").value;
+  if (algo === "symmetric") {
+    sel.classList.add("hidden");
+    $("pw-import-orgkey-label").classList.add("hidden");
+    return;
+  }
+  sel.classList.remove("hidden");
+  $("pw-import-orgkey-label").classList.remove("hidden");
+  sel.innerHTML = "";
+  try {
+    const rows = await api(`/api/orgkeys?algorithm=${algo}`);
+    sel.innerHTML = `<option value="">（默认：服务端密钥）</option>`;
+    for (const k of rows) {
+      const opt = document.createElement("option");
+      opt.value = k.id;
+      const hasLabel = k.has_private ? "（含私钥）" : "（仅公钥）";
+      opt.textContent = `${k.name} · ${groupName(k.group_id)} ${hasLabel}`;
+      sel.appendChild(opt);
+    }
+  } catch (e) {
+    sel.innerHTML = `<option value="">（加载失败：${esc(e.message)}）</option>`;
+  }
+}
+
+function pwImportAlgoChange() {
+  loadImportOrgkeys();
+}
+
+function pwImportPwReveal() {
+  const inp = $("pw-import-entry-pw");
+  if (inp.type === "password") { inp.type = "text"; $("pw-import-pw-reveal").textContent = "隐藏"; }
+  else { inp.type = "password"; $("pw-import-pw-reveal").textContent = "显示"; }
+}
+
+async function downloadPasswordTemplate(fmt) {
+  try {
+    const resp = await fetch(`/api/passwords/template?fmt=${fmt}`, {
+      headers: { Authorization: "Bearer " + state.token },
+    });
+    if (!resp.ok) throw new Error("模板下载失败 (" + resp.status + ")");
+    const blob = await resp.blob();
+    triggerDownload(blob, `密码批量导入模板.${fmt}`);
+  } catch (e) {
+    showError("模板下载失败：" + e.message);
+  }
+}
+
+async function doPasswordImport() {
+  const fileEl = $("pw-import-file");
+  if (!fileEl.files || !fileEl.files.length) {
+    $("pw-import-error").textContent = "请先选择要导入的文件";
+    return;
+  }
+  const entryPassword = $("pw-import-entry-pw").value;
+  if (!entryPassword) {
+    $("pw-import-error").textContent = "请先填写「加密密码（解密密码）」";
+    return;
+  }
+  const algorithm = $("pw-import-algorithm").value;
+  const orgkeyVal = $("pw-import-orgkey").value;
+  const orgkeyId = orgkeyVal ? Number(orgkeyVal) : null;
+
+  const fd = new FormData();
+  fd.append("file", fileEl.files[0]);
+  fd.append("algorithm", algorithm);
+  fd.append("entry_password", entryPassword);
+  if (orgkeyId) fd.append("orgkey_id", String(orgkeyId));
+
+  $("pw-import-error").textContent = "";
+  showWait("正在导入…");
+  try {
+    const res = await fetch("/api/passwords/import", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + state.token },
+      body: fd,
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = (data && (data.detail || data.message)) || ("导入失败 (" + res.status + ")");
+      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
+    renderImportResults(data);
+    showToast(`导入完成：成功 ${data.created}，失败 ${data.errored}，跳过 ${data.skipped}`);
+    loadEntries();
+  } catch (e) {
+    $("pw-import-error").textContent = e.message;
+  } finally {
+    hideWait();
+  }
+}
+
+function renderImportResults(data) {
+  $("pw-import-summary").classList.remove("hidden");
+  $("pw-import-summary").textContent =
+    `共 ${data.total} 行：成功 ${data.created}，失败 ${data.errored}，跳过 ${data.skipped}`;
+  const box = $("pw-import-results");
+  box.classList.remove("hidden");
+  box.innerHTML = "";
+  for (const r of data.rows) {
+    const cls = r.status === "created" ? "exp-pill-ok" : (r.status === "skipped" ? "exp-pill-warn" : "exp-pill-err");
+    const label = r.status === "created" ? "成功" : (r.status === "skipped" ? "跳过" : "失败");
+    const div = document.createElement("div");
+    div.className = "exp-row";
+    div.innerHTML = `
+      <div class="exp-row-info">
+        <div class="exp-row-name">第 ${r.row} 行 · ${esc(r.username || "(空)")}</div>
+        <div class="exp-row-algo">${esc(r.message || "")}</div>
+      </div>
+      <span class="exp-pill ${cls}">${label}</span>`;
+    box.appendChild(div);
+  }
+}
+
 async function apiBlob(path) {
   const res = await fetch(path, { headers: { Authorization: "Bearer " + state.token } });
   // 一定要先按 Content-Type 分支消费 body；
@@ -1323,10 +1492,14 @@ function checkedGroupIds() {
 function openUserAdd() {
   editingUserId = null;
   $("user-modal-title").textContent = "新增用户";
+  $("user-avatar").textContent = "＋";
+  $("user-role-badge").classList.add("hidden");
   $("u-username").value = "";
   $("u-username").disabled = false;
   $("u-pwd-label").textContent = "密码 *";
   $("u-password").value = "";
+  $("u-password").type = "password";
+  $("u-pwd-reveal").textContent = "显示";
   $("u-isadmin").checked = false;
   fillGroupChecks("u-groups", []);
   $("user-error").textContent = "";
@@ -1337,11 +1510,15 @@ async function openUserEdit(id) {
   const u = state.users.find((x) => x.id === id);
   if (!u) return;
   editingUserId = id;
-  $("user-modal-title").textContent = "编辑用户：" + u.username;
+  $("user-modal-title").textContent = "编辑用户";
+  $("user-avatar").textContent = (u.username || "U").slice(0, 1).toUpperCase();
+  $("user-role-badge").classList.toggle("hidden", !u.is_admin);
   $("u-username").value = u.username;
   $("u-username").disabled = true; // 用户名不可改
   $("u-pwd-label").textContent = "密码（留空则保持不变）";
   $("u-password").value = "";
+  $("u-password").type = "password";
+  $("u-pwd-reveal").textContent = "显示";
   $("u-isadmin").checked = u.is_admin;
   fillGroupChecks("u-groups", u.groups.map((g) => g.id));
   $("user-error").textContent = "";
@@ -1384,6 +1561,68 @@ async function deleteUser(id) {
     await loadAdminUsers();
   } catch (e) {
     showToast("删除失败：" + e.message);
+  }
+}
+
+/* ----- 自助修改登录密码（所有登录用户可用）----- */
+function openChangePw() {
+  $("cpw-current").value = "";
+  $("cpw-new").value = "";
+  $("cpw-confirm").value = "";
+  $("cpw-current").type = "password";
+  $("cpw-new").type = "password";
+  $("cpw-current-reveal").textContent = "显示";
+  $("cpw-new-reveal").textContent = "显示";
+  $("cpw-error").textContent = "";
+  $("changepw-modal").classList.remove("hidden");
+  $("cpw-current").focus();
+}
+function closeChangePw() { $("changepw-modal").classList.add("hidden"); }
+
+async function doChangePw() {
+  const cur = $("cpw-current").value;
+  const npw = $("cpw-new").value;
+  const confirm = $("cpw-confirm").value;
+  $("cpw-error").textContent = "";
+  if (!cur) return ($("cpw-error").textContent = "请输入当前密码");
+  if (npw.length < 8) return ($("cpw-error").textContent = "新密码至少 8 位");
+  if (npw !== confirm) return ($("cpw-error").textContent = "两次输入的新密码不一致");
+  showWait("正在验证并修改密码…");
+  try {
+    const begin = await api("/api/auth/change-password/begin", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    let payload;
+    if (begin.mode === "scram" && begin.salt && begin.nonce) {
+      // SCRAM-SM3：T = SM3(current || salt)；proof = SM3(T || nonce)
+      const saltBytes = hexToBytes(begin.salt);
+      const nonceBytes = hexToBytes(begin.nonce);
+      const pwBytes = new TextEncoder().encode(cur);
+      const tInput = new Uint8Array(pwBytes.length + saltBytes.length);
+      tInput.set(pwBytes, 0);
+      tInput.set(saltBytes, pwBytes.length);
+      const verifierBytes = sm3Bytes(tInput);
+      const proofInput = new Uint8Array(verifierBytes.length + nonceBytes.length);
+      proofInput.set(verifierBytes, 0);
+      proofInput.set(nonceBytes, verifierBytes.length);
+      const proofBytes = sm3Bytes(proofInput);
+      const proofHex = Array.from(proofBytes, (b) => b.toString(16).padStart(2, "0")).join("");
+      payload = { nonce: begin.nonce, proof: proofHex, new_password: npw };
+    } else {
+      // legacy 兜底：未启用 SCRAM 的账号用明文当前密码校验
+      payload = { current_password: cur, new_password: npw };
+    }
+    await api("/api/auth/change-password/verify", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    hideWait();
+    closeChangePw();
+    showToast("登录密码已修改");
+  } catch (e) {
+    hideWait();
+    $("cpw-error").textContent = e.message || "修改失败";
   }
 }
 
@@ -1529,6 +1768,16 @@ function bind() {
   // 「统一密码」变化时，把仍为空的逐项密码框填上（用户体验更顺）
   $("export-master-pw").addEventListener("input", syncMasterToPerRow);
 
+  // 批量导入密码
+  $("import-btn").addEventListener("click", openImport);
+  $("pw-import-cancel").addEventListener("click", closeImport);
+  $("pw-import-go").addEventListener("click", doPasswordImport);
+  $("pw-import-file").addEventListener("change", onImportFileChange);
+  $("pw-import-algorithm").addEventListener("change", pwImportAlgoChange);
+  $("pw-import-pw-reveal").addEventListener("click", pwImportPwReveal);
+  $("pw-import-tpl-xlsx").addEventListener("click", () => downloadPasswordTemplate("xlsx"));
+  $("pw-import-tpl-csv").addEventListener("click", () => downloadPasswordTemplate("csv"));
+
   // 系统管理
   $("admin-btn").addEventListener("click", openAdmin);
   $("admin-close").addEventListener("click", () => {
@@ -1559,8 +1808,32 @@ function bind() {
   $("add-group-btn").addEventListener("click", openGroupAdd);
   $("user-cancel").addEventListener("click", () => $("user-modal").classList.add("hidden"));
   $("user-save").addEventListener("click", saveUser);
+  // 编辑用户弹窗内的「密码显示」切换
+  $("u-pwd-reveal").addEventListener("click", () => {
+    const inp = $("u-password");
+    const show = inp.type === "password";
+    inp.type = show ? "text" : "password";
+    $("u-pwd-reveal").textContent = show ? "隐藏" : "显示";
+  });
   $("group-cancel").addEventListener("click", () => $("group-modal").classList.add("hidden"));
   $("group-save").addEventListener("click", saveGroup);
+
+  // 自助修改密码（所有登录用户可用）
+  $("change-pw-btn").addEventListener("click", openChangePw);
+  $("cpw-cancel").addEventListener("click", closeChangePw);
+  $("cpw-save").addEventListener("click", doChangePw);
+  $("cpw-current-reveal").addEventListener("click", () => {
+    const inp = $("cpw-current");
+    const show = inp.type === "password";
+    inp.type = show ? "text" : "password";
+    $("cpw-current-reveal").textContent = show ? "隐藏" : "显示";
+  });
+  $("cpw-new-reveal").addEventListener("click", () => {
+    const inp = $("cpw-new");
+    const show = inp.type === "password";
+    inp.type = show ? "text" : "password";
+    $("cpw-new-reveal").textContent = show ? "隐藏" : "显示";
+  });
 
   // 批量新增用户（点「批量新增」按钮 → 弹窗 → 选文件 → 点「开始导入」）
   $("batch-user-btn").addEventListener("click", openUserBatch);
@@ -1618,11 +1891,6 @@ function bind() {
     const id = Number(btn.dataset.id);
     if (btn.dataset.gact === "edit") openGroupEdit(id);
     else if (btn.dataset.gact === "del") deleteGroup(id);
-  });
-
-  // 点击遮罩关闭弹窗
-  document.querySelectorAll(".modal").forEach((m) => {
-    m.addEventListener("click", (e) => { if (e.target === m) m.classList.add("hidden"); });
   });
 }
 
