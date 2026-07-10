@@ -1,10 +1,13 @@
 # 离线部署用法：
 #   1. 在本机能联网的机器上：bash backend/offline/build_image.sh
-#      （生成 password_manager_image.tar，约 213MB）
+#      （build_image.sh 会先构建前端 Vue 产物，再构建镜像并导出 password_manager_image.tar，约 320MB）
 #   2. 把整个项目目录（含 docker-compose.yml 与 password_manager_image.tar）拷到离线服务器
 #   3. 在离线服务器：
 #        docker load -i backend/offline/password_manager_image.tar
 #        docker compose up -d
+# 若用 `docker compose up --build` 从源码本地构建：请先在本机执行
+#   cd backend/frontend && npm install && npm run build   （生成 frontend/dist）
+# 前端静态资源由 FastAPI 从 /app/app/static 同源托管，镜像内不含 Node 构建环境。
 # 首次启动请用环境变量覆盖管理员密码（ADMIN_PASSWORD）。
 # 平台：目标服务器为 Linux x86_64，因此强制 platform: linux/amd64；
 # 若你的构建/运行主机是 Apple Silicon (arm64)，Docker 会通过 QEMU 模拟运行 amd64 容器。

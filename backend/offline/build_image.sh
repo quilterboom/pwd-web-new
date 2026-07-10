@@ -15,6 +15,11 @@ TARBALL=backend/offline/password_manager_image.tar
 # 产出无法在目标服务器运行的镜像。
 PLATFORM=linux/amd64
 
+# 前端（Vue3 + Vite）为「构建机预编译」：静态资源与架构无关，
+# 在任意平台（Mac/Windows/Linux）上 npm run build 的产物都可直接打进 amd64 镜像。
+echo ">>> 构建前端静态产物（Vue3 + Vite）"
+( cd backend/frontend && npm install && npm run build )
+
 if [ "${1:-}" = "offline" ]; then
   # 离线构建：要求 offline/wheels 已是 Linux manylinux 包
   echo ">>> [离线] 构建镜像（依赖来自 offline/wheels，需先准备好 Linux 版依赖包）"

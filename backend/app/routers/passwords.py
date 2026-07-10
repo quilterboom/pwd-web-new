@@ -1,4 +1,3 @@
-import csv
 import io
 import json
 import os
@@ -65,7 +64,7 @@ class UnlockRequest(BaseModel):
 class ExportRequest(BaseModel):
     ids: list[int]  # 要导出的条目 id
     passwords: dict[str, str] = {}  # 明文导出时：{ "<entry_id>": "<解密密码>" }
-    format: str = "json"  # 'json' | 'csv'
+    format: str = "xlsx"  # 仅支持 'xlsx'（Excel）
     plaintext: bool = False  # True=导出明文；False=加密备份（仅含密文，无需密码）
 
 
@@ -353,45 +352,23 @@ def _xlsx_bytes_passwords() -> bytes:
     return buf.getvalue()
 
 
-def _csv_bytes_passwords() -> bytes:
-    """CSV 形式的备选模板（无 excel 环境也能下载）。"""
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["# 密码批量导入模板（# 开头的行作为说明，解析时会被忽略）"])
-    writer.writerow(["# 表头：用户名 / 密码明文 / 备注 / 所属分组"])
-    writer.writerow(PWD_IMPORT_HEADERS)
-    writer.writerow(["alice", "Alice@2026", "示例账号", "研发部"])
-    writer.writerow(["bob", "BobSecret!9", "示例账号2", "测试组"])
-    # 加 UTF-8 BOM 让 Excel 直接打开不乱码
-    return ("\ufeff" + buf.getvalue()).encode("utf-8")
-
-
 @router.get("/template")
 def download_password_template(
     fmt: str = "xlsx",
     _: User = Depends(get_current_user),
 ):
-    """下载批量导入密码的模板。
-
-    - ``fmt=xlsx``（默认）：返回 .xlsx
-    - ``fmt=csv``         ：返回 .csv（含 UTF-8 BOM）
-    """
+    """下载批量导入密码的模板，仅支持 Excel (.xlsx) 格式。"""
     fmt = (fmt or "xlsx").lower()
-    if fmt == "xlsx":
-        data = _xlsx_bytes_passwords()
-        filename = "密码批量导入模板.xlsx"
-        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    elif fmt == "csv":
-        data = _csv_bytes_passwords()
-        filename = "密码批量导入模板.csv"
-        media = "text/csv; charset=utf-8"
-    else:
-        raise HTTPException(status_code=400, detail="fmt 仅支持 xlsx / csv")
+    if fmt != "xlsx":
+        raise HTTPException(status_code=400, detail="导入模板仅支持 Excel (.xlsx) 格式")
+    data = _xlsx_bytes_passwords()
+    filename = "密码批量导入模板.xlsx"
+    media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
     quoted = quote(filename)
     headers = {
         "Content-Disposition": (
-            f"attachment; filename=\"password_import_template.{fmt}\"; filename*=UTF-8''{quoted}"
+            f"attachment; filename=\"password_import_template.xlsx\"; filename*=UTF-8''{quoted}"
         )
     }
     return StreamingResponse(io.BytesIO(data), media_type=media, headers=headers)
@@ -444,35 +421,6 @@ def _read_xlsx_passwords(content: bytes) -> List[dict]:
     return out
 
 
-def _read_csv_passwords(content: bytes) -> List[dict]:
-    """从 csv bytes 提取数据行。"""
-    text = content.decode("utf-8-sig", errors="replace")
-    reader = csv.reader(io.StringIO(text))
-    headers_map = {"username": "用户名", "secret": "密码明文", "notes": "备注", "group": "所属分组"}
-    headers = None
-    out: List[dict] = []
-    for row in reader:
-        if not row or all((c or "").strip() == "" for c in row):
-            continue
-        first = (row[0] or "").strip()
-        if first.startswith("#"):
-            continue
-        if headers is None:
-            if "用户名" not in row:
-                continue
-            headers = list(row)
-            continue
-        cells = {}
-        for key, header_name in headers_map.items():
-            try:
-                col_idx = headers.index(header_name)
-            except ValueError:
-                continue
-            cells[key] = (row[col_idx].strip() if col_idx < len(row) else "")
-        out.append(cells)
-    return out
-
-
 class PasswordImportRow(BaseModel):
     row: int
     username: str
@@ -497,7 +445,7 @@ async def import_passwords(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """批量导入密码：上传 .xlsx / .csv，按页面选择的加密方式 / 加密密码 / 密钥逐行创建。
+    """批量导入密码：上传 .xlsx，按页面选择的加密方式 / 加密密码 / 密钥逐行创建。
 
     - ``algorithm``    ：加密方式（symmetric / gpg / sm2），对所有行生效
     - ``entry_password``：加密密码（即「解密密码」），对所有行生效，必填
@@ -512,18 +460,13 @@ async def import_passwords(
         raise HTTPException(status_code=413, detail="上传文件过大（上限 10MB）")
 
     fname = (file.filename or "").lower()
-    if fname.endswith(".xlsx"):
-        try:
-            data_rows = _read_xlsx_passwords(raw)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"无法解析 xlsx：{e}")
-    elif fname.endswith(".csv"):
-        try:
-            data_rows = _read_csv_passwords(raw)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"无法解析 csv：{e}")
-    else:
-        raise HTTPException(status_code=400, detail="仅支持 .xlsx 或 .csv 文件")
+    if not fname.endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="仅支持 .xlsx（Excel）文件")
+
+    try:
+        data_rows = _read_xlsx_passwords(raw)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"无法解析 xlsx：{e}")
 
     if not data_rows:
         raise HTTPException(
@@ -934,7 +877,81 @@ def _build_export_rows(db: Session, entries: list, plaintext: bool, passwords: d
 
 def _export_filename(fmt: str) -> str:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"密码导出_{ts}.{ 'csv' if fmt == 'csv' else 'json' }"
+    return f"密码导出_{ts}.xlsx"
+
+
+def _xlsx_bytes_export(rows: list, plaintext: bool, skipped: int) -> bytes:
+    """把导出数据行渲染成 .xlsx 字节。
+
+    - plaintext=True ：输出「账号 / 加密方式 / 所属分组 / 密钥 / 密码明文 / 备注 / 更新时间」
+    - plaintext=False：输出「账号 / 加密方式 / 所属分组 / 密钥 / 密文 / 备注 / 更新时间」（仅含密文，用于迁移/恢复）
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "密码导出"
+
+    bold = Font(bold=True)
+    head_fill = PatternFill(start_color="FFEAF2FF", end_color="FFEAF2FF", fill_type="solid")
+    center = Alignment(horizontal="center", vertical="center")
+
+    if plaintext:
+        headers = ["账号", "加密方式", "所属分组", "密钥", "密码明文", "备注", "更新时间"]
+    else:
+        headers = ["账号", "加密方式", "所属分组", "密钥", "密文", "备注", "更新时间"]
+    for col_idx, header in enumerate(headers, start=1):
+        c = ws.cell(row=1, column=col_idx, value=header)
+        c.font = bold
+        c.fill = head_fill
+        c.alignment = center
+
+    for r, row in enumerate(rows, start=2):
+        if plaintext:
+            if row.get("decrypt_error"):
+                secret = "解密失败"
+            elif row.get("secret") is None:
+                secret = ""
+            else:
+                secret = row.get("secret")
+            vals = [
+                row.get("username", ""),
+                row.get("algorithm", ""),
+                row.get("group_name", ""),
+                row.get("key_name") or "",
+                secret,
+                row.get("notes", ""),
+                row.get("updated_at") or "",
+            ]
+        else:
+            vals = [
+                row.get("username", ""),
+                row.get("algorithm", ""),
+                row.get("group_name", ""),
+                row.get("key_name") or "",
+                row.get("ciphertext", ""),
+                row.get("notes", ""),
+                row.get("updated_at") or "",
+            ]
+        for c_idx, val in enumerate(vals, start=1):
+            cell = ws.cell(row=r, column=c_idx, value=val)
+            cell.alignment = Alignment(vertical="center")
+
+    # 列宽自适应
+    from openpyxl.utils import get_column_letter
+    for col_idx in range(1, len(headers) + 1):
+        name = get_column_letter(col_idx)
+        maxlen = len(str(headers[col_idx - 1]))
+        for r in range(2, len(rows) + 2):
+            v = ws.cell(row=r, column=col_idx).value
+            if v is not None:
+                maxlen = max(maxlen, len(str(v)))
+        ws.column_dimensions[name].width = min(60, max(14, maxlen + 2))
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 @router.post("/export")
@@ -943,15 +960,15 @@ def export_passwords(
     db: Session = Depends(get_db),
     user: User = Depends(require_admin),
 ):
-    """批量导出所选密码。
+    """批量导出所选密码，仅支持 Excel (.xlsx) 格式。
 
     - plaintext=False：加密备份（含密文 + 元数据），无需密码，可用于迁移 / 恢复。
     - plaintext=True：明文导出，需通过 passwords 提供各条目的解密密码；解密失败者 secret 为 null。
     解密密码通过请求体（JSON）传输，不会出现在 URL 中。
     """
-    fmt = (req.format or "json").lower()
-    if fmt not in ("json", "csv"):
-        raise HTTPException(status_code=400, detail="不支持的导出格式")
+    fmt = (req.format or "xlsx").lower()
+    if fmt != "xlsx":
+        raise HTTPException(status_code=400, detail="导出仅支持 Excel (.xlsx) 格式")
     if not req.ids:
         raise HTTPException(status_code=400, detail="请至少选择一条密码")
 
@@ -992,40 +1009,11 @@ def export_passwords(
         )
         db.commit()
 
-    if fmt == "csv":
-        buf = io.StringIO()
-        fieldnames = [
-            "id", "username", "algorithm", "group_name", "key_name",
-            "secret", "notes", "updated_at",
-        ]
-        writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        for r in rows:
-            writer.writerow({
-                "id": r["id"],
-                "username": r["username"],
-                "algorithm": r["algorithm"],
-                "group_name": r["group_name"],
-                "key_name": r["key_name"] or "",
-                "secret": r.get("secret") if r.get("secret") is not None else ("解密失败" if r.get("decrypt_error") else ""),
-                "notes": r["notes"],
-                "updated_at": r["updated_at"] or "",
-            })
-        content = buf.getvalue().encode("utf-8-sig")
-        media_type = "text/csv; charset=utf-8"
-    else:
-        payload = {
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-            "plaintext": req.plaintext,
-            "count": len(rows),
-            "skipped": skipped,
-            "entries": rows,
-        }
-        content = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-        media_type = "application/json; charset=utf-8"
+    content = _xlsx_bytes_export(rows, req.plaintext, skipped)
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
     fname = _export_filename(fmt)
-    ascii_name = f"password_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ 'csv' if fmt == 'csv' else 'json' }"
+    ascii_name = f"password_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     disposition = f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(fname)}'
     return Response(content=content, media_type=media_type, headers={"Content-Disposition": disposition})
 

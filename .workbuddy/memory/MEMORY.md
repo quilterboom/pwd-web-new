@@ -1,9 +1,9 @@
 # passwd-web 项目长期笔记
 
 ## 项目身份
-- 路径：`D:\aicode\passwd-web-new`（源码 `backend/app`；前端 `backend/app/static/{index.html,app.js,styles.css}`）。
-- 类型：FastAPI + SQLAlchemy + SQLite + pgpy/gmssl 离线密码保险箱；原生 HTML/CSS/JS 前端；多租户（按 group_id 隔离）。
-- 部署：内网离线 x86_64 Linux（Docker 镜像 `password-manager`，tar `backend/offline/password_manager_image.tar`，当前 **232MB / 镜像 235MB / 前端 ?v=13**）。
+- 路径：`D:\aicode\passwd-web-new`（后端源码 `backend/app`；**前端为 Vue3+Vite**：源 `backend/frontend/`，构建产物 `backend/frontend/dist/`；运行态由 FastAPI 从 `backend/app/static/`（即容器内 `/app/app/static`）同源托管）。
+- 类型：FastAPI + SQLAlchemy + SQLite + pgpy/gmssl 离线密码保险箱；**前端已重构为 Vue3 SFC（Vite 构建，单文件 `app.js` 时代结束）**；多租户（按 group_id 隔离）。
+- 部署：内网离线 x86_64 Linux（Docker 镜像 `password-manager`，tar `backend/offline/password_manager_image.tar`，**单阶段 Dockerfile，构建机预编译 `frontend/dist` 后 `COPY` 进镜像；镜像 ~318MB**）。
 
 ## 认证
 - **SCRAM-SM3 登录**：`POST /api/auth/login/begin {username}` → 返回持久化 `pw_salt`+一次性`nonce`；前端算 `T=SM3(password||salt_raw)`、`proof=SM3(T||nonce_raw)`；`POST /api/auth/login/verify {username,nonce,proof}` 比对 `expected=SM3(pw_verifier||nonce)`。旧用户登录 `/api/auth/login` 成功自动迁移；前端 `doLogin` 遇 409 回退明文 `/login`。
@@ -28,7 +28,8 @@
 - **`api()` 抛错必附 `e.status=res.status`**：`doLogin` 靠 `err.status===409` 判断迁移回退；只放中文 detail 则 `includes("409")` 永远 false。
 - **provider 接口一致（SM2 passphrase）**：所有 decrypt/encrypt 签名对齐 gpg/sm2（SM2 的 decrypt 须加 `passphrase:str=None` 形参忽略），否则 SM2 解密 500。
 - **沙箱强杀加密进程**：加密测试进容器跑；本机只 `py_compile`/`node --check`。
-- **前端改 JS/CSS 记得 bump `?v=N`**。
+- **Dockerfile 静态资源 COPY 路径（致命）**：`WORKDIR /app` 下相对 COPY 目标会多嵌套一层。正确：`COPY frontend/dist ./app/static`（→ `/app/app/static`，正是 `main.py` 的 `STATIC_DIR`）。**绝不可写 `./app/app/static`**（会落 `/app/app/app/static`，应用读不到）。多阶段 `COPY --from` 在 Apple Silicon+QEMU 模拟 amd64 下出现过层物化异常（前端产物不物化或路径偏移），故本镜像改用**单阶段 + 宿主机预编译 `frontend/dist`**（静态资源与架构无关）再直接 COPY，目标路径显式可控、跨架构稳。`build_image.sh` 已含 `cd backend/frontend && npm install && npm run build` 预构建；`docker build` 用 `--no-cache` 避免陈旧前端缓存。
+- **前端改动流程**：改 `backend/frontend/src/*` 后须 `cd backend/frontend && npm run build`（更新 `dist/`），再 `docker build`/`docker save`。已无 `?v=N` 机制（Vite 产物带 content-hash 文件名，天然长效缓存）。
 
 ## 验证
 - E2E（需 live 容器如 `pm-test2` 9012）：

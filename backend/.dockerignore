@@ -11,3 +11,8 @@ __pycache__/
 data/
 .secret_key
 .smoke_*.py
+
+# 前端：frontend/dist 为「构建机预编译」的静态产物，必须打进镜像；
+#       node_modules / .vite 是本地依赖与缓存，无需打进上下文。
+frontend/node_modules
+frontend/.vite
