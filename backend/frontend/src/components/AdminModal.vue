@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { state, api, refreshMe, showToast } from '../store'
 import { fmtTime, HISTORY_ACTION_LABELS, humanizeComment, algoBadge, groupName } from '../utils'
 import UserFormModal from './UserFormModal.vue'
@@ -13,6 +13,39 @@ const users = ref([])
 const groups = ref([])
 const audit = ref([])
 const auditFilter = ref('all')
+
+const userSearch = ref('')
+const groupSearch = ref('')
+const auditSearch = ref('')
+
+const filteredUsers = computed(() => {
+  const q = userSearch.value.trim().toLowerCase()
+  if (!q) return users.value
+  return users.value.filter(
+    (u) =>
+      u.username.toLowerCase().includes(q) ||
+      (u.groups || []).some((g) => g.name.toLowerCase().includes(q)) ||
+      (u.admin_groups || []).some((g) => g.name.toLowerCase().includes(q))
+  )
+})
+const filteredGroups = computed(() => {
+  const q = groupSearch.value.trim().toLowerCase()
+  if (!q) return groups.value
+  return groups.value.filter(
+    (g) =>
+      g.name.toLowerCase().includes(q) ||
+      (g.members || []).some((m) => m.username.toLowerCase().includes(q))
+  )
+})
+const filteredAudit = computed(() => {
+  const q = auditSearch.value.trim().toLowerCase()
+  if (!q) return audit.value
+  return audit.value.filter((r) =>
+    [r.username, r.title, r.group_name, r.changed_by, humanizeComment(r.comment || '')]
+      .filter(Boolean)
+      .some((f) => f.toLowerCase().includes(q))
+  )
+})
 
 const showUserForm = ref(false)
 const showGroupForm = ref(false)
@@ -105,13 +138,17 @@ async function deleteGroup(id) {
             <button class="btn ghost" @click="showUserBatch = true">📥 批量新增</button>
             <button class="btn primary" @click="(editingUser = null, showUserForm = true)">＋ 新增用户</button>
           </div>
+          <div class="spacer"></div>
+          <div class="toolbar-group">
+            <input class="search-input" v-model="userSearch" type="text" placeholder="搜索用户名 / 分组…" />
+          </div>
         </div>
         <table class="pw-table">
           <thead>
             <tr><th>用户名</th><th>管理员</th><th>所属分组</th><th>操作</th></tr>
           </thead>
           <tbody>
-            <tr v-for="u in users" :key="u.id">
+            <tr v-for="u in filteredUsers" :key="u.id">
               <td>{{ u.username }}</td>
               <td>
                 <span v-if="u.is_admin">是</span>
@@ -131,7 +168,7 @@ async function deleteGroup(id) {
                 </div>
               </td>
             </tr>
-            <tr v-if="!users.length"><td colspan="4" style="color:#6b7280">暂无用户</td></tr>
+            <tr v-if="!filteredUsers.length"><td colspan="4" style="color:#6b7280">无匹配的用户</td></tr>
           </tbody>
         </table>
       </section>
@@ -140,6 +177,9 @@ async function deleteGroup(id) {
       <section v-show="subtab === 'groups'">
         <div class="toolbar">
           <div class="spacer"></div>
+          <div class="toolbar-group">
+            <input class="search-input" v-model="groupSearch" type="text" placeholder="搜索分组名 / 成员…" />
+          </div>
           <button class="btn primary" @click="(editingGroup = null, showGroupForm = true)">＋ 新增分组</button>
         </div>
         <table class="pw-table">
@@ -147,7 +187,7 @@ async function deleteGroup(id) {
             <tr><th>分组名</th><th>成员数</th><th>成员</th><th>操作</th></tr>
           </thead>
           <tbody>
-            <tr v-for="g in groups" :key="g.id">
+            <tr v-for="g in filteredGroups" :key="g.id">
               <td>{{ g.name }}</td>
               <td>{{ g.member_count }}</td>
               <td>{{ g.members.map((m) => m.username).join('、') || '—' }}</td>
@@ -158,7 +198,7 @@ async function deleteGroup(id) {
                 </div>
               </td>
             </tr>
-            <tr v-if="!groups.length"><td colspan="4" style="color:#6b7280">暂无分组</td></tr>
+            <tr v-if="!filteredGroups.length"><td colspan="4" style="color:#6b7280">无匹配的分组</td></tr>
           </tbody>
         </table>
       </section>
@@ -174,13 +214,17 @@ async function deleteGroup(id) {
               <button class="seg" :class="{ active: auditFilter === 'delete' }" @click="setAuditFilter('delete', $event.target)">删除</button>
             </div>
           </div>
+          <div class="spacer"></div>
+          <div class="toolbar-group">
+            <input class="search-input" v-model="auditSearch" type="text" placeholder="搜索账号 / 标题 / 分组 / 操作人…" />
+          </div>
         </div>
         <table class="pw-table hist-table">
           <thead>
             <tr><th>时间</th><th>动作</th><th>账号</th><th>标题</th><th>分组</th><th>操作人</th><th>说明</th></tr>
           </thead>
           <tbody>
-            <tr v-for="r in audit" :key="r.id">
+            <tr v-for="r in filteredAudit" :key="r.id">
               <td>{{ fmtTime(r.changed_at) }}</td>
               <td :class="'act-' + r.action">{{ HISTORY_ACTION_LABELS[r.action] || r.action }}</td>
               <td>{{ r.username || '' }}</td>
@@ -189,7 +233,7 @@ async function deleteGroup(id) {
               <td>{{ r.changed_by || '' }}</td>
               <td>{{ humanizeComment(r.comment || '') }}</td>
             </tr>
-            <tr v-if="!audit.length"><td colspan="7" style="color:#6b7280">暂无审计记录</td></tr>
+            <tr v-if="!filteredAudit.length"><td colspan="7" style="color:#6b7280">无匹配的审计记录</td></tr>
           </tbody>
         </table>
         <p class="audit-tip">说明：删除密码会在此生成一条「删除」记录，含操作人与账号，便于管理员审计。</p>
