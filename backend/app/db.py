@@ -1,10 +1,22 @@
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, text, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 from .config import DATABASE_URL
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# timeout: sqlite3 _busy 等待(秒)，配合下方 PRAGMA busy_timeout 双保险
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+# 并发加固：开启 WAL（读写互不阻塞、写不阻塞读）+ busy_timeout 自动重试，
+# 避免多人同时写入时出现 "database is locked"。WAL 模式写入后会生成
+# <db>-wal / <db>-shm 两个伴随文件，须与 .db 一同保留（已在 /app/data 卷内）。
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragma(dbapi_conn, conn_record):
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA busy_timeout=30000")
+    cur.close()
 Base = declarative_base()
 
 
