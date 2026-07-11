@@ -297,7 +297,7 @@ def create(
 # 每一行只需提供 用户名 / 密码明文（真实密码）/ 备注 / 所属分组。
 # 与用户批量导入一致：逐行解析、逐行创建，某行失败不影响其它行，并以逐行报告回执。
 
-PWD_IMPORT_HEADERS = ["用户名", "密码明文", "备注", "所属分组"]
+PWD_IMPORT_HEADERS = ["标题", "账号", "密码明文", "备注", "所属分组"]
 
 
 def _xlsx_bytes_passwords() -> bytes:
@@ -316,19 +316,20 @@ def _xlsx_bytes_passwords() -> bytes:
 
     ws.cell(row=1, column=1, value="使用说明").font = Font(bold=True, color="FF2563EB")
     instructions = [
-        "1) 第 1 行为使用说明，解析时会忽略；请勿在表头上方插入空行。",
-        "2) 第 2 行为表头：用户名 / 密码明文 / 备注 / 所属分组。",
-        "3) 第 3 行起为示例数据，仅作演示；上传前可整行删除。",
-        "4) 「密码明文」即你要保存的真实账号密码 / 密钥本身；它与导入页面填写的",
-        "   「加密密码（解密密码）」是两回事 —— 加密密码仅用于解锁本批导入的条目。",
-        "5) 「所属分组」须是系统里已存在的分组名；不存在则该行报错。",
-        "6) 加密方式 / 加密密码 / 密钥在导入页面上统一选择，对所有行生效。",
+        "本表用于批量导入密码。第 1 行为说明，导入时会自动忽略。",
+        "表头为：标题 / 账号 / 密码明文 / 备注 / 所属分组，其下方即为数据行。",
+        "「标题」为密码条目的名称（如网站 / 应用名）；「账号」为登录用户名 / 邮箱。",
+        "「密码明文」即你要保存的真实账号密码 / 密钥本身；它与导入页面填写的",
+        "「加密密码（解密密码）」是两回事 —— 加密密码仅用于解锁本批导入的条目。",
+        "「所属分组」须是系统里已存在的分组名；不存在则该行报错。",
+        "加密方式 / 加密密码 / 密钥在导入页面上统一选择，对所有行生效。",
+        "下方两行示例数据仅作演示，上传前请整行删除。",
     ]
     for i, line in enumerate(instructions, start=2):
         ws.cell(row=i, column=1, value=line)
 
     note_end = 1 + len(instructions)
-    body_start = note_end + 3  # 表头行
+    body_start = note_end + 2  # 与说明之间留一行空行，再放表头
 
     for col_idx, header in enumerate(PWD_IMPORT_HEADERS, start=1):
         c = ws.cell(row=body_start, column=col_idx, value=header)
@@ -337,8 +338,8 @@ def _xlsx_bytes_passwords() -> bytes:
         c.alignment = center
 
     examples = [
-        ["alice", "Alice@2026", "示例账号", "研发部"],
-        ["bob", "BobSecret!9", "示例账号2", "测试组"],
+        ["腾讯云控制台", "alice@example.com", "Alice@2026", "示例账号", "研发部"],
+        ["GitHub", "bob", "BobSecret!9", "示例账号2", "测试组"],
     ]
     for r, row in enumerate(examples, start=body_start + 1):
         for c_idx, val in enumerate(row, start=1):
@@ -377,13 +378,14 @@ def download_password_template(
 # ────────────────────── 上传解析 ──────────────────────
 
 def _norm_pwd_row(row: dict) -> tuple:
-    """把一行数据归一化成 (username, secret, notes, group_names)。"""
+    """把一行数据归一化成 (title, username, secret, notes, group_names)。"""
+    title = (row.get("title") or "").strip()
     username = (row.get("username") or "").strip()
     secret = (row.get("secret") or "").strip()  # 密码明文（真实密码）
     notes = (row.get("notes") or "").strip()
     group_raw = (row.get("group") or "").strip()
     group_names = [g.strip() for g in group_raw.split(",") if g.strip()]
-    return username, secret, notes, group_names
+    return title, username, secret, notes, group_names
 
 
 def _read_xlsx_passwords(content: bytes) -> List[dict]:
@@ -404,9 +406,9 @@ def _read_xlsx_passwords(content: bytes) -> List[dict]:
             continue
         if headers is None:
             raw_headers = [str(x).strip() for x in row]
-            if "用户名" not in raw_headers:
+            if "密码明文" not in raw_headers:
                 continue
-            headers = {"username": "用户名", "secret": "密码明文", "notes": "备注", "group": "所属分组"}
+            headers = {"title": "标题", "username": "账号", "secret": "密码明文", "notes": "备注", "group": "所属分组"}
             continue
         full = list(r)
         cells = {}
@@ -471,7 +473,7 @@ async def import_passwords(
     if not data_rows:
         raise HTTPException(
             status_code=400,
-            detail="未找到可导入的数据行；请检查表头是否为「用户名 / 密码明文 / 备注 / 所属分组」",
+            detail="未找到可导入的数据行；请检查表头是否为「标题 / 账号 / 密码明文 / 备注 / 所属分组」",
         )
 
     if not entry_password:
@@ -485,14 +487,14 @@ async def import_passwords(
     created = skipped = errored = 0
 
     for idx, raw_row in enumerate(data_rows, start=1):
-        username, secret, notes, group_names = _norm_pwd_row(raw_row)
+        title, username, secret, notes, group_names = _norm_pwd_row(raw_row)
         if not username and not secret:
             results.append(PasswordImportRow(row=idx, username="", status="skipped", message="空行已跳过"))
             skipped += 1
             continue
 
         if not username:
-            results.append(PasswordImportRow(row=idx, username="", status="error", message="用户名为空"))
+            results.append(PasswordImportRow(row=idx, username="", status="error", message="账号为空"))
             errored += 1
             continue
         if not secret:
@@ -555,7 +557,7 @@ async def import_passwords(
             continue
 
         entry = PasswordEntry(
-            title="",
+            title=title,
             username=username,
             notes=notes,
             group_id=group_id,
@@ -576,7 +578,7 @@ async def import_passwords(
             password_id=entry.id,
             group_id=group_id,
             action="create",
-            title="",
+            title=title,
             username=username,
             algorithm=algo,
             ciphertext=entry.ciphertext,

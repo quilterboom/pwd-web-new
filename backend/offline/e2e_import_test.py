@@ -2,7 +2,7 @@
 
 加密在服务端容器（pm-test2:9012）内进行，本机只做 HTTP 客户端，安全。
 """
-import csv, io, json, struct, urllib.request, urllib.error
+import csv, io, json, struct, subprocess, urllib.request, urllib.error
 
 BASE = "http://localhost:9012"
 
@@ -132,16 +132,24 @@ print("\n=== 5. 管理员导出可达（空 ids -> 400 而非 403） ===")
 st, _ = req("POST", "/api/passwords/export", {"ids": [], "format": "json", "plaintext": True}, token=admin)
 print("管理员导出(空) ->", st, "(期望 400，证明已过管理员校验)")
 
-print("\n=== 6. CSV 批量导入 ===")
-buf = io.StringIO()
-w = csv.writer(buf)
-w.writerow(["用户名", "密码明文", "备注", "所属分组"])
-w.writerow(["imp_a", "SecretA!1", "导入测试", gname])
-w.writerow(["imp_b", "SecretB!2", "导入测试", gname])
-csv_bytes = ("\ufeff" + buf.getvalue()).encode("utf-8")
+print("\n=== 6. xlsx 批量导入（容器内生成，表头：标题/账号/密码明文/备注/所属分组） ===")
+gen6 = f'''
+import sys; sys.path.insert(0,"/app")
+from openpyxl import Workbook
+wb=Workbook(); ws=wb.active; ws.title="t"
+ws.append(["标题","账号","密码明文","备注","所属分组"])
+ws.append(["网站A","imp_a","SecretA!1","导入测试","{gname}"])
+ws.append(["网站B","imp_b","SecretB!2","导入测试","{gname}"])
+wb.save("/tmp/imp6.xlsx")
+print("GEN OK")
+'''
+subprocess.run(["docker", "exec", "pm-test2", "python3", "-c", gen6], check=True)
+subprocess.run(["docker", "cp", "pm-test2:/tmp/imp6.xlsx", "/tmp/imp6.xlsx"], check=True)
+with open("/tmp/imp6.xlsx", "rb") as f:
+    xlsx6 = f.read()
 body, ctype = multipart(
     {"algorithm": "symmetric", "entry_password": "ImpPass!2026"},
-    ("file", "import_test.csv", csv_bytes, "text/csv"),
+    ("file", "import_test.xlsx", xlsx6, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
 )
 st, resp = req("POST", "/api/passwords/import", body=body, token=admin,
                headers={"Content-Type": ctype})
@@ -166,9 +174,9 @@ wb=Workbook(); ws=wb.active; ws.title="t"
 ws.cell(row=1,column=1,value="使用说明").font=Font(bold=True)
 ws.cell(row=2,column=1,value="说明行2")
 hdr=5
-for c,h in enumerate(["用户名","密码明文","备注","所属分组"],start=1):
+for c,h in enumerate(["标题","账号","密码明文","备注","所属分组"],start=1):
     ws.cell(row=hdr,column=c,value=h)
-data=[["imp_c","SecretC!3","xlsx测试","{gname}"],["imp_d","SecretD!4","xlsx测试","{gname}"]]
+data=[["网站C","imp_c","SecretC!3","xlsx测试","{gname}"],["网站D","imp_d","SecretD!4","xlsx测试","{gname}"]]
 for r,row in enumerate(data,start=hdr+1):
     for c,v in enumerate(row,start=1):
         ws.cell(row=r,column=c,value=v)

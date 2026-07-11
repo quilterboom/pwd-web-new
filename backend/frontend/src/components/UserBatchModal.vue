@@ -12,15 +12,15 @@ const results = ref([])
 
 function onFileChange(e) {
   const f = e.target.files && e.target.files[0]
-  canGo.value = !!(f && (f.name.toLowerCase().endsWith('.xlsx') || f.name.toLowerCase().endsWith('.csv')))
+  canGo.value = !!(f && f.name.toLowerCase().endsWith('.xlsx'))
   summary.value = null
   results.value = []
   error.value = ''
 }
 
-async function downloadTemplate(fmt) {
+async function downloadTemplate() {
   try {
-    const resp = await fetch(`/api/admin/users/template?fmt=${fmt}`, {
+    const resp = await fetch(`/api/admin/users/template`, {
       headers: { Authorization: 'Bearer ' + state.token },
     })
     if (!resp.ok) throw new Error('模板下载失败 (' + resp.status + ')')
@@ -28,7 +28,7 @@ async function downloadTemplate(fmt) {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `用户批量导入模板.${fmt}`
+    a.download = `用户批量导入模板.xlsx`
     document.body.appendChild(a)
     a.click()
     a.remove()
@@ -41,7 +41,7 @@ async function downloadTemplate(fmt) {
 async function upload() {
   const f = fileEl.value && fileEl.value.files[0]
   if (!f) {
-    error.value = '请先选择一个 .xlsx 或 .csv 文件'
+    error.value = '请先选择一个 .xlsx 文件'
     return
   }
   error.value = ''
@@ -79,19 +79,18 @@ async function upload() {
       <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <div class="modal-head">
         <h2>📥 批量新增用户</h2>
-        <p class="modal-sub">下载 Excel 或 CSV 模板 → 填写后上传，支持部分失败回执。</p>
+        <p class="modal-sub">下载 Excel 模板 → 填写后上传，支持部分失败回执。</p>
       </div>
       <div class="exp-section">
         <div class="exp-section-title">下载模板</div>
-        <button type="button" class="seg-link" @click="downloadTemplate('xlsx')">📄 Excel (.xlsx)</button>
-        <button type="button" class="seg-link" @click="downloadTemplate('csv')">📊 CSV (.csv)</button>
+        <button type="button" class="seg-link" @click="downloadTemplate()">📄 Excel (.xlsx)</button>
         <div class="hint" style="margin-top:8px;color:#6b7280;font-size:12px;line-height:1.6">
           模板内含「用户名 / 密码 / 是否管理员 / 所属分组」四列：多条「所属分组」用半角逗号分隔；管理员可不绑定分组。示例可保留也可整行删除。
         </div>
       </div>
       <div class="exp-section">
         <div class="exp-section-title">上传文件</div>
-        <input ref="fileEl" type="file" accept=".xlsx,.csv" @change="onFileChange" />
+        <input ref="fileEl" type="file" accept=".xlsx" @change="onFileChange" />
       </div>
 
       <div v-if="summary" class="exp-summary">

@@ -103,26 +103,26 @@ st,b,h = req("GET", "/api/admin/users/template?fmt=xlsx", token=tok)
 print("  status", st, "content-type", h.get("Content-Type"), "bytes", len(b))
 assert st==200 and b[:2]==b"PK", "xlsx template not returned"
 
-print("\n=== Feature 5: download csv template ===")
+print("\n=== Feature 5: download csv template (should 400) ===")
 st,b,h = req("GET", "/api/admin/users/template?fmt=csv", token=tok)
-print("  status", st, "bytes", len(b), "head", b[:30])
-assert st==200
+print("  status", st, "(expect 400, csv no longer supported)")
+assert st==400
 
-print("\n=== Feature 5: bulk CSV import (3 rows: 2 ok + 1 dup error) ===")
+print("\n=== Feature 5: bulk XLSX import (3 rows: 2 ok + 1 dup error) ===")
 # admin already exists; try import admin (error) + two new users
 import datetime
+from openpyxl import Workbook
 suffix = datetime.datetime.now().strftime("%H%M%S")
 u1, u2 = f"dave_{suffix}", f"erin_{suffix}"
-buf=io.StringIO()
-w=csv.writer(buf)
-w.writerow(["用户名","密码","是否管理员","所属分组"])
-w.writerow([u1,"DavePass!1","否",""])
-w.writerow([u2,"ErinPass!2","否",""])
-w.writerow(["admin","AdminDup!3","是",""])  # duplicate -> error
-csv_bytes=("\ufeff"+buf.getvalue()).encode("utf-8")
+wb = Workbook(); ws = wb.active
+ws.append(["用户名","密码","是否管理员","所属分组"])
+ws.append([u1,"DavePass!1","否",""])
+ws.append([u2,"ErinPass!2","否",""])
+ws.append(["admin","AdminDup!3","是",""])  # duplicate -> error
+_xb = io.BytesIO(); wb.save(_xb); xlsx_bytes = _xb.getvalue()
 st,b,h=req("POST","/api/admin/users/batch",
             token=tok,
-            files={"file": ("users.csv", csv_bytes, "text/csv")})
+            files={"file": ("users.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
 print("  status", st)
 res=json.loads(b)
 print("  total/created/errored:", res["total"], res["created"], res["errored"])
