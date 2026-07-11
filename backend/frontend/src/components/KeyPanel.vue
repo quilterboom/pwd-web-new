@@ -149,9 +149,9 @@ function onKeysSaved() {
 
     <div class="pager" v-if="keysTotal > 0">
       <select class="pager-size" v-model="pageSize">
-        <option :value="10">10 条/页</option>
-        <option :value="20">20 条/页</option>
-        <option :value="50">50 条/页</option>
+        <option :value="10">10</option>
+        <option :value="20">20</option>
+        <option :value="50">50</option>
       </select>
       <button class="btn ghost small" :disabled="page <= 1" @click="goto(-1)">‹ 上一页</button>
       <span class="pager-info">第 {{ page }} / {{ pages }} 页 · 共 {{ keysTotal }} 条</span>
@@ -178,6 +178,8 @@ function onKeysSaved() {
   color: #6b7280;
 }
 .pager-size {
+  width: 50px;
+  flex: 0 0 50px;
   padding: 5px 8px;
   border: 1px solid #d1d5db;
   border-radius: 6px;

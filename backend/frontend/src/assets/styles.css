@@ -121,7 +121,7 @@ label { font-size: 13px; color: var(--muted); margin-top: 10px; display: block; 
 .secret-row { display: flex; gap: 8px; }
 .secret-row input { flex: 1; }
 
-.hist-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.hist-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
 .hist-table th, .hist-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .hist-table th { background: #f9fafb; color: var(--muted); }
 /* 审计日志：默认行高，说明单元格换行不外扩，保持同行页其他行等高 */
@@ -130,6 +130,12 @@ label { font-size: 13px; color: var(--muted); margin-top: 10px; display: block; 
 .act-create { color: var(--green); }
 .act-update { color: var(--primary); }
 .act-delete { color: var(--danger); }
+/* 审计表：固定列宽，避免窄列把「动作」等标签挤成竖排；动作列强制单行横排 */
+.hist-table th:nth-child(1), .hist-table td:nth-child(1) { width: 150px; white-space: nowrap; }
+.hist-table th:nth-child(2), .hist-table td:nth-child(2) { width: 64px; min-width: 56px; white-space: nowrap; }
+.hist-table th:nth-child(3), .hist-table td:nth-child(3) { width: 120px; }
+.hist-table th:nth-child(4), .hist-table td:nth-child(4) { width: 110px; }
+.hist-table th:nth-child(5), .hist-table td:nth-child(5) { width: 90px; }
 
 .error { color: var(--danger); font-size: 13px; margin-top: 8px; min-height: 16px; }
 

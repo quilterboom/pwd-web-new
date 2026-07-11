@@ -234,9 +234,9 @@ watch(pageSize, () => {
         </table>
         <div class="pager" v-if="usersTotal > 0">
           <select class="pager-size" v-model="pageSize">
-            <option :value="10">10 条/页</option>
-            <option :value="20">20 条/页</option>
-            <option :value="50">50 条/页</option>
+            <option :value="10">10</option>
+            <option :value="20">20</option>
+            <option :value="50">50</option>
           </select>
           <button class="btn ghost small" :disabled="userPage <= 1" @click="gotoUsers(-1)">‹ 上一页</button>
           <span class="pager-info">第 {{ userPage }} / {{ userPages }} 页 · 共 {{ usersTotal }} 条</span>
@@ -274,9 +274,9 @@ watch(pageSize, () => {
         </table>
         <div class="pager" v-if="groupsTotal > 0">
           <select class="pager-size" v-model="pageSize">
-            <option :value="10">10 条/页</option>
-            <option :value="20">20 条/页</option>
-            <option :value="50">50 条/页</option>
+            <option :value="10">10</option>
+            <option :value="20">20</option>
+            <option :value="50">50</option>
           </select>
           <button class="btn ghost small" :disabled="groupPage <= 1" @click="gotoGroups(-1)">‹ 上一页</button>
           <span class="pager-info">第 {{ groupPage }} / {{ groupPages }} 页 · 共 {{ groupsTotal }} 条</span>
@@ -318,9 +318,9 @@ watch(pageSize, () => {
         </table>
         <div class="pager" v-if="auditTotal > 0">
           <select class="pager-size" v-model="pageSize">
-            <option :value="10">10 条/页</option>
-            <option :value="20">20 条/页</option>
-            <option :value="50">50 条/页</option>
+            <option :value="10">10</option>
+            <option :value="20">20</option>
+            <option :value="50">50</option>
           </select>
           <button class="btn ghost small" :disabled="auditPage <= 1" @click="gotoAudit(-1)">‹ 上一页</button>
           <span class="pager-info">第 {{ auditPage }} / {{ auditPages }} 页 · 共 {{ auditTotal }} 条</span>
@@ -353,6 +353,8 @@ watch(pageSize, () => {
   color: #6b7280;
 }
 .pager-size {
+  width: 50px;
+  flex: 0 0 50px;
   padding: 5px 8px;
   border: 1px solid #d1d5db;
   border-radius: 6px;
