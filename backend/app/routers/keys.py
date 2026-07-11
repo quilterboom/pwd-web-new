@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -131,36 +132,66 @@ def list_orgkeys(
     user: User = Depends(get_current_user),
     group_id: int | None = Query(default=None),
     algorithm: str | None = Query(default=None),
+    page: int = None,
+    page_size: int = None,
+    q: Optional[str] = None,
 ):
-    """列出当前用户所属组织（或指定组织）下的密钥；可按 algorithm 过滤（gpg/sm2）。
+    """列出当前用户所属组织（或指定组织）下的密钥；可按 algorithm / 分组 / 关键字过滤。
 
-    普通用户仅见所属分组；分组管理员仅见其管理/所属分组；超级管理员见全部分组。
+    - 不传 page_size：返回完整扁平数组（兼容旧调用 / 其它内部页面）。
+    - 传 page_size：返回分页信封 {"items", "total", "page", "page_size"}（密钥库页走此路径）。
+    - q：按「密钥名 / 创建人」模糊搜索（后台执行）。
     """
-    q = db.query(OrgKey)
+    qry = db.query(OrgKey)
     visible = get_user_group_ids(db, user)
     if not visible:
-        return []
-    q = q.filter(OrgKey.group_id.in_(visible))
+        # 无可见分组：未指定分页返回空数组，指定分页返回空信封（保持契约一致）
+        if page_size is None:
+            return []
+        return {"items": [], "total": 0, "page": 1, "page_size": page_size}
+    qry = qry.filter(OrgKey.group_id.in_(visible))
     if group_id is not None:
-        q = q.filter(OrgKey.group_id == group_id)
+        qry = qry.filter(OrgKey.group_id == group_id)
     if algorithm is not None:
-        q = q.filter(OrgKey.algorithm == algorithm)
-    rows = q.order_by(OrgKey.group_id.asc(), OrgKey.created_at.desc()).all()
-    return [
-        {
-            "id": r.id,
-            "name": r.name,
-            "algorithm": r.algorithm,
-            "group_id": r.group_id,
-            "fingerprint": r.fingerprint,
-            "has_private": r.has_private,
-            "private_protected": bool(r.private_protected),
-            "created_by": r.created_by,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-        }
-        for r in rows
-    ]
+        qry = qry.filter(OrgKey.algorithm == algorithm)
+    rows = qry.order_by(OrgKey.group_id.asc(), OrgKey.created_at.desc()).all()
+    if q:
+        ql = q.strip().lower()
+        rows = [r for r in rows if ql in (r.name or "").lower() or ql in (r.created_by or "").lower()]
+    total = len(rows)
+    # 未指定分页 → 兼容旧调用：返回完整扁平数组
+    if page_size is None:
+        return [_orgkey_out(r) for r in rows]
+    # 指定分页 → 返回信封
+    page = page or 1
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 20
+    if page_size > 5000:
+        page_size = 5000
+    total_pages = (total + page_size - 1) // page_size or 1
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * page_size
+    page_rows = rows[start:start + page_size]
+    items = [_orgkey_out(r) for r in page_rows]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+def _orgkey_out(r: OrgKey) -> dict:
+    return {
+        "id": r.id,
+        "name": r.name,
+        "algorithm": r.algorithm,
+        "group_id": r.group_id,
+        "fingerprint": r.fingerprint,
+        "has_private": r.has_private,
+        "private_protected": bool(r.private_protected),
+        "created_by": r.created_by,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    }
 
 
 @orgkeys_router.post("/generate")

@@ -107,8 +107,8 @@ st, xlsx = req("GET", "/api/passwords/template?fmt=xlsx", token=admin, raw=True)
 print("xlsx template:", st, "bytes", len(xlsx))
 open("/tmp/pwd_tpl.xlsx", "wb").write(xlsx)
 st, csvb = req("GET", "/api/passwords/template?fmt=csv", token=admin, raw=True)
-print("csv template:", st, "bytes", len(csvb))
-assert st == 200
+print("csv template:", st, "bytes", len(csvb), "(期望 400，已废弃 csv)")
+assert st == 400, "csv 模板已废弃，应返回 400"
 
 print("\n=== 3. 取一个存在的分组名 ===")
 st, groups = req("GET", "/api/admin/groups", token=admin)

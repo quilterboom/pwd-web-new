@@ -1,6 +1,15 @@
 <script setup>
-import { computed, ref } from 'vue'
-import { state, loadOrgKeys, requestDelete, showToast, showError, apiBlob, triggerDownload, filenameFromDisposition } from '../store'
+import { computed, ref, watch, onMounted } from 'vue'
+import {
+  state,
+  loadOrgKeys,
+  requestDelete,
+  showToast,
+  apiBlob,
+  triggerDownload,
+  filenameFromDisposition,
+} from '../store'
+import { api } from '../api/http'
 import { algoBadge, groupName, fmtTime } from '../utils'
 import KeyGenModal from './KeyGenModal.vue'
 import KeyImportModal from './KeyImportModal.vue'
@@ -10,14 +19,49 @@ const search = ref('')
 const showGen = ref(false)
 const showImport = ref(false)
 
-const filtered = computed(() => {
-  let rows = state.keys
-  const gid = Number(groupFilter.value || 0)
-  if (gid > 0) rows = rows.filter((k) => k.group_id === gid)
-  const q = search.value.trim().toLowerCase()
-  if (q) rows = rows.filter((k) => (k.name + ' ' + (k.created_by || '')).toLowerCase().includes(q))
-  return rows
+// ── 后台分页展示（state.keys 仍保持全量，供导出 / 删除定位使用）──
+const keys = ref([])
+const keysTotal = ref(0)
+const page = ref(1)
+const pageSize = ref(10)
+const pages = computed(() => Math.max(1, Math.ceil(keysTotal.value / pageSize.value)))
+
+async function fetchKeys() {
+  try {
+    const qs = new URLSearchParams()
+    qs.set('page', String(page.value))
+    qs.set('page_size', String(pageSize.value))
+    const gid = Number(groupFilter.value || 0)
+    if (gid > 0) qs.set('group_id', String(gid))
+    if (search.value.trim()) qs.set('q', search.value.trim())
+    const resp = await api('/api/orgkeys?' + qs.toString())
+    keys.value = resp.items
+    keysTotal.value = resp.total
+  } catch (e) {
+    showToast('加载密钥库失败：' + e.message)
+  }
+}
+
+function goto(delta) {
+  page.value += delta
+  fetchKeys()
+}
+
+// 数据变更（生成 / 导入 / 删除 / 切标签刷新全量）后刷新当前页展示
+watch(
+  () => state.keys,
+  () => fetchKeys()
+)
+watch([search, groupFilter], () => {
+  page.value = 1
+  fetchKeys()
 })
+watch(pageSize, () => {
+  page.value = 1
+  fetchKeys()
+})
+
+onMounted(fetchKeys)
 
 async function exportKey(id, kind) {
   const entry = state.keys.find((k) => k.id === id)
@@ -36,6 +80,11 @@ async function exportKey(id, kind) {
 function onDelete(id) {
   const k = state.keys.find((x) => x.id === id)
   requestDelete('key', id, k ? k.name : '#' + id)
+}
+
+function onKeysSaved() {
+  loadOrgKeys()
+  fetchKeys()
 }
 </script>
 
@@ -73,7 +122,7 @@ function onDelete(id) {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="k in filtered" :key="k.id">
+        <tr v-for="k in keys" :key="k.id">
           <td>{{ k.name }}</td>
           <td><span class="badge" :class="algoBadge(k.algorithm).cls">{{ algoBadge(k.algorithm).label }}</span></td>
           <td>{{ groupName(state.groups, k.group_id) }}</td>
@@ -89,14 +138,51 @@ function onDelete(id) {
             </div>
           </td>
         </tr>
-        <tr v-if="!filtered.length && state.keys.length">
+        <tr v-if="!keys.length && state.keys.length && groupFilter !== '0'">
+          <td :colspan="state.isAdmin ? 8 : 7" style="color:#6b7280">该分组暂无密钥条目</td>
+        </tr>
+        <tr v-else-if="!keys.length && state.keys.length">
           <td :colspan="state.isAdmin ? 8 : 7" style="color:#6b7280">无匹配结果</td>
         </tr>
       </tbody>
     </table>
+
+    <div class="pager" v-if="keysTotal > 0">
+      <select class="pager-size" v-model="pageSize">
+        <option :value="10">10 条/页</option>
+        <option :value="20">20 条/页</option>
+        <option :value="50">50 条/页</option>
+      </select>
+      <button class="btn ghost small" :disabled="page <= 1" @click="goto(-1)">‹ 上一页</button>
+      <span class="pager-info">第 {{ page }} / {{ pages }} 页 · 共 {{ keysTotal }} 条</span>
+      <button class="btn ghost small" :disabled="page >= pages" @click="goto(1)">下一页 ›</button>
+    </div>
+
     <div v-if="!state.keys.length" class="empty">该分组暂无密钥条目，点击「生成密钥」或「导入密钥」开始。</div>
 
-    <KeyGenModal v-if="showGen" @close="showGen = false" @saved="loadOrgKeys" />
-    <KeyImportModal v-if="showImport" @close="showImport = false" @saved="loadOrgKeys" />
+    <KeyGenModal v-if="showGen" @close="showGen = false" @saved="onKeysSaved" />
+    <KeyImportModal v-if="showImport" @close="showImport = false" @saved="onKeysSaved" />
   </section>
 </template>
+
+<style scoped>
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.pager-info {
+  font-size: 13px;
+  color: #6b7280;
+}
+.pager-size {
+  padding: 5px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+  color: #111827;
+}
+</style>

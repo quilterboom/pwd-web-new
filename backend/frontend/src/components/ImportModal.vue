@@ -16,6 +16,7 @@ const error = ref('')
 const summary = ref(null)
 const results = ref([])
 const canGo = ref(false)
+const groupId = ref(null)
 
 onMounted(() => loadOrgkeys())
 
@@ -80,10 +81,15 @@ async function doImport() {
     error.value = '请先填写「加密密码（解密密码）」'
     return
   }
+  if (!groupId.value) {
+    error.value = '请先在页面选择「所属分组」'
+    return
+  }
   const fd = new FormData()
   fd.append('file', f)
   fd.append('algorithm', algorithm.value)
   fd.append('entry_password', entryPw.value)
+  fd.append('group_id', String(groupId.value))
   if (orgkeyId.value) fd.append('orgkey_id', String(orgkeyId.value))
 
   error.value = ''
@@ -117,7 +123,7 @@ async function doImport() {
       <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <div class="modal-head">
         <h2>📥 批量导入密码</h2>
-        <p class="modal-sub">下载模板 → 填写后上传；加密方式 / 加密密码 / 密钥在本页统一选择，对所有行生效。</p>
+        <p class="modal-sub">下载模板 → 填写后上传；加密方式 / 加密密码 / 密钥 / 所属分组均在本页统一选择，对所有行生效。</p>
       </div>
 
       <div class="exp-section">
@@ -152,6 +158,14 @@ async function doImport() {
           <option v-for="k in orgkeyOptions" :key="k.id" :value="k.id">
             {{ k.name }} · {{ k.group_name || '' }} {{ k.has_private ? '（含私钥）' : '（仅公钥）' }}
           </option>
+        </select>
+      </div>
+
+      <div class="exp-section">
+        <div class="exp-section-title">4. 选择所属分组（对所有行生效）</div>
+        <select v-model="groupId">
+          <option :value="null" disabled>请选择分组…</option>
+          <option v-for="g in state.groups" :key="g.id" :value="g.id">{{ g.name }}</option>
         </select>
       </div>
 

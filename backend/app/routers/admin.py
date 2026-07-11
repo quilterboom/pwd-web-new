@@ -70,6 +70,35 @@ def _user_admin_groups_out(db: Session, user: User) -> list[dict]:
     return [{"id": g.id, "name": g.name} for g in groups]
 
 
+def _user_out(db: Session, user: User) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "is_admin": bool(user.is_admin),
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "groups": _user_groups_out(db, user),
+        "admin_groups": _user_admin_groups_out(db, user),
+    }
+
+
+def _group_out(db: Session, group: Group) -> dict:
+    members = (
+        db.query(User)
+        .join(user_groups, user_groups.c.user_id == User.id)
+        .filter(user_groups.c.group_id == group.id)
+        .order_by(User.username)
+        .all()
+    )
+    return {
+        "id": group.id,
+        "name": group.name,
+        "description": group.description,
+        "created_at": group.created_at.isoformat() if group.created_at else None,
+        "member_count": len(members),
+        "members": [{"id": m.id, "username": m.username} for m in members],
+    }
+
+
 def _unlink_user_admin_group(db: Session, **where) -> None:
     stmt = user_admin_groups.delete()
     for col, val in where.items():
@@ -123,24 +152,49 @@ def _unlink_user_group(db: Session, **where) -> None:
 
 @users_router.get("")
 def list_users(
-    caller: User = Depends(require_admin), db: Session = Depends(get_db)
+    page: int = None,
+    page_size: int = None,
+    q: Optional[str] = None,
+    caller: User = Depends(require_admin),
+    db: Session = Depends(get_db),
 ):
+    """管理员用户列表。
+
+    - 不传 page_size：返回完整扁平数组（兼容旧调用 / 其它内部脚本）。
+    - 传 page_size：返回分页信封 {"items", "total", "page", "page_size"}（前端弹框走此路径）。
+    - q：按「用户名 / 所属分组名」模糊搜索。
+    """
     rows = db.query(User).order_by(User.username).all()
     # 分组管理员：仅可见「与自己所管理分组有交集」的用户（含自己）
     visible = _visible_user_ids(db, caller)
     if visible is not None:
         rows = [u for u in rows if u.id in visible]
-    return [
-        {
-            "id": u.id,
-            "username": u.username,
-            "is_admin": bool(u.is_admin),
-            "created_at": u.created_at.isoformat() if u.created_at else None,
-            "groups": _user_groups_out(db, u),
-            "admin_groups": _user_admin_groups_out(db, u),
-        }
-        for u in rows
-    ]
+    if q:
+        ql = q.strip().lower()
+        rows = [
+            u for u in rows
+            if ql in u.username.lower()
+            or any(ql in g.name.lower() for g in u.groups)
+        ]
+    total = len(rows)
+    # 未指定分页 → 兼容旧调用：返回完整扁平数组
+    if page_size is None:
+        return [_user_out(db, u) for u in rows]
+    # 指定分页 → 返回信封
+    page = page or 1
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 20
+    if page_size > 5000:
+        page_size = 5000
+    total_pages = (total + page_size - 1) // page_size or 1
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * page_size
+    page_rows = rows[start:start + page_size]
+    items = [_user_out(db, u) for u in page_rows]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 def _seed_login_material(user: User, password: str) -> None:
@@ -280,33 +334,43 @@ class GroupUpdate(BaseModel):
 
 @groups_router.get("")
 def list_groups(
-    caller: User = Depends(require_admin), db: Session = Depends(get_db)
+    page: int = None,
+    page_size: int = None,
+    q: Optional[str] = None,
+    caller: User = Depends(require_admin),
+    db: Session = Depends(get_db),
 ):
+    """管理员分组列表。
+
+    - 不传 page_size：返回完整扁平数组（兼容旧调用 / 其它内部脚本）。
+    - 传 page_size：返回分页信封。
+    - q：按「分组名」模糊搜索。
+    """
     if is_global_admin(db, caller):
         rows = db.query(Group).order_by(Group.name).all()
     else:
         my_admin_ids = get_admin_group_ids(db, caller)
         rows = db.query(Group).filter(Group.id.in_(my_admin_ids)).order_by(Group.name).all()
-    out = []
-    for g in rows:
-        members = (
-            db.query(User)
-            .join(user_groups, user_groups.c.user_id == User.id)
-            .filter(user_groups.c.group_id == g.id)
-            .order_by(User.username)
-            .all()
-        )
-        out.append(
-            {
-                "id": g.id,
-                "name": g.name,
-                "description": g.description,
-                "created_at": g.created_at.isoformat() if g.created_at else None,
-                "member_count": len(members),
-                "members": [{"id": m.id, "username": m.username} for m in members],
-            }
-        )
-    return out
+    if q:
+        ql = q.strip().lower()
+        rows = [g for g in rows if ql in g.name.lower()]
+    total = len(rows)
+    if page_size is None:
+        return [_group_out(db, g) for g in rows]
+    page = page or 1
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 20
+    if page_size > 5000:
+        page_size = 5000
+    total_pages = (total + page_size - 1) // page_size or 1
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * page_size
+    page_rows = rows[start:start + page_size]
+    items = [_group_out(db, g) for g in page_rows]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @groups_router.post("")
@@ -398,46 +462,72 @@ def delete_group(
 
 
 # ============================ 审计日志（仅管理员） ============================
+def _audit_out(r, groups_by_id: dict) -> dict:
+    return {
+        "id": r.id,
+        "password_id": r.password_id,
+        "group_id": r.group_id,
+        "group_name": groups_by_id.get(r.group_id, "—"),
+        "action": r.action,
+        "title": r.title,
+        "username": r.username,
+        "algorithm": r.algorithm,
+        "notes": r.notes,
+        "changed_by": r.changed_by,
+        "changed_at": r.changed_at.isoformat() if r.changed_at else None,
+        "comment": r.comment,
+    }
+
+
 @audit_router.get("")
 def list_audit(
     action: Optional[str] = None,
-    limit: int = 500,
+    q: Optional[str] = None,
+    page: int = None,
+    page_size: int = None,
     caller: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """管理员审计日志：返回修改记录（含删除），仅管理员可访问。
 
     - 不传 action：返回全部记录（新增 / 修改 / 删除）。
-    - 传 action=delete：仅返回删除密码的记录，便于管理员集中核查删除行为。
-    返回的每条记录都带有分组名称（group_name），便于跨分组审计。
+    - 传 action=delete：仅返回删除密码 / 密钥的记录，便于管理员集中核查删除行为。
+    - 传 page_size：返回分页信封 {"items", "total", "page", "page_size"}（前端弹框）。否则返回扁平数组（兼容旧脚本）。
+    - q：按「账号 / 标题 / 分组名 / 操作人 / 说明」模糊搜索。
     - 分组管理员：仅返回其管理分组范围内的记录。
     """
-    if limit <= 0 or limit > 2000:
-        limit = 500
-    q = db.query(History)
+    groups_by_id = {g.id: g.name for g in db.query(Group).all()}
+    base = db.query(History)
     if not is_global_admin(db, caller):
         my_admin_ids = get_admin_group_ids(db, caller)
-        q = q.filter(History.group_id.in_(my_admin_ids))
+        base = base.filter(History.group_id.in_(my_admin_ids))
     if action:
-        q = q.filter_by(action=action)
-    q = q.order_by(History.changed_at.desc()).limit(limit)
-    groups = {g.id: g.name for g in db.query(Group).all()}
-    rows = []
-    for r in q.all():
-        rows.append(
-            {
-                "id": r.id,
-                "password_id": r.password_id,
-                "group_id": r.group_id,
-                "group_name": groups.get(r.group_id, "—"),
-                "action": r.action,
-                "title": r.title,
-                "username": r.username,
-                "algorithm": r.algorithm,
-                "notes": r.notes,
-                "changed_by": r.changed_by,
-                "changed_at": r.changed_at.isoformat() if r.changed_at else None,
-                "comment": r.comment,
-            }
-        )
-    return rows
+        base = base.filter_by(action=action)
+    rows = base.order_by(History.changed_at.desc()).all()
+    if q:
+        ql = q.strip().lower()
+        rows = [
+            r for r in rows
+            if ql in (r.username or "").lower()
+            or ql in (r.title or "").lower()
+            or ql in (groups_by_id.get(r.group_id, "") or "").lower()
+            or ql in (r.changed_by or "").lower()
+            or ql in (r.comment or "").lower()
+        ]
+    total = len(rows)
+    if page_size is None:
+        return [_audit_out(r, groups_by_id) for r in rows]
+    page = page or 1
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 20
+    if page_size > 5000:
+        page_size = 5000
+    total_pages = (total + page_size - 1) // page_size or 1
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * page_size
+    page_rows = rows[start:start + page_size]
+    items = [_audit_out(r, groups_by_id) for r in page_rows]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}

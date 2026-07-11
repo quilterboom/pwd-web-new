@@ -9,6 +9,7 @@ const canGo = ref(false)
 const error = ref('')
 const summary = ref(null)
 const results = ref([])
+const groupIds = ref([])
 
 function onFileChange(e) {
   const f = e.target.files && e.target.files[0]
@@ -49,6 +50,7 @@ async function upload() {
   try {
     const fd = new FormData()
     fd.append('file', f, f.name)
+    for (const gid of groupIds.value) fd.append('group_ids', String(gid))
     const resp = await fetch('/api/admin/users/batch', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + state.token },
@@ -85,12 +87,21 @@ async function upload() {
         <div class="exp-section-title">下载模板</div>
         <button type="button" class="seg-link" @click="downloadTemplate()">📄 Excel (.xlsx)</button>
         <div class="hint" style="margin-top:8px;color:#6b7280;font-size:12px;line-height:1.6">
-          模板内含「用户名 / 密码 / 是否管理员 / 所属分组」四列：多条「所属分组」用半角逗号分隔；管理员可不绑定分组。示例可保留也可整行删除。
+          模板内含「用户名 / 密码 / 是否管理员」三列；所属分组请在下方页面选择，无需在模板填写。示例可保留也可整行删除。
         </div>
       </div>
       <div class="exp-section">
         <div class="exp-section-title">上传文件</div>
         <input ref="fileEl" type="file" accept=".xlsx" @change="onFileChange" />
+      </div>
+
+      <div class="exp-section">
+        <div class="exp-section-title">选择所属分组（可多选，留空表示不绑定任何分组）</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:6px">
+          <label v-for="g in state.groups" :key="g.id" style="display:flex;align-items:center;gap:6px;font-size:13px">
+            <input type="checkbox" :value="g.id" v-model="groupIds" /> {{ g.name }}
+          </label>
+        </div>
       </div>
 
       <div v-if="summary" class="exp-summary">

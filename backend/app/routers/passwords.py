@@ -227,15 +227,50 @@ def _decrypt_entry_secret(db: Session, e: PasswordEntry, entry_password: Optiona
 
 @router.get("")
 def list_passwords(
+    page: int = None,
+    page_size: int = None,
+    q: Optional[str] = None,
     db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
+    """密码列表。
+
+    - 不传 page_size：返回完整扁平数组（兼容旧调用 / 其它内部页面）。
+    - 传 page_size：返回分页信封 {"items", "total", "page", "page_size"}（密码页走此路径）。
+    - q：按「账号 / 标题 / 备注」模糊搜索（后台执行）。
+    """
     gids = get_user_group_ids(db, user)
     f = visibility_filter(PasswordEntry.group_id, user, gids)
-    q = db.query(PasswordEntry).filter_by(deleted=False)
+    qry = db.query(PasswordEntry).filter_by(deleted=False)
     if f is not None:
-        q = q.filter(f)
-    rows = q.order_by(PasswordEntry.updated_at.desc()).all()
-    return [_serialize_meta(db, r) for r in rows]
+        qry = qry.filter(f)
+    rows = qry.order_by(PasswordEntry.updated_at.desc()).all()
+    if q:
+        ql = q.strip().lower()
+        rows = [
+            r for r in rows
+            if ql in (r.username or "").lower()
+            or ql in (r.title or "").lower()
+            or ql in (r.notes or "").lower()
+        ]
+    total = len(rows)
+    # 未指定分页 → 兼容旧调用：返回完整扁平数组
+    if page_size is None:
+        return [_serialize_meta(db, r) for r in rows]
+    # 指定分页 → 返回信封
+    page = page or 1
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 20
+    if page_size > 5000:
+        page_size = 5000
+    total_pages = (total + page_size - 1) // page_size or 1
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * page_size
+    page_rows = rows[start:start + page_size]
+    items = [_serialize_meta(db, r) for r in page_rows]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.post("")
@@ -297,7 +332,7 @@ def create(
 # 每一行只需提供 用户名 / 密码明文（真实密码）/ 备注 / 所属分组。
 # 与用户批量导入一致：逐行解析、逐行创建，某行失败不影响其它行，并以逐行报告回执。
 
-PWD_IMPORT_HEADERS = ["标题", "账号", "密码明文", "备注", "所属分组"]
+PWD_IMPORT_HEADERS = ["账号", "密码明文", "备注"]
 
 
 def _xlsx_bytes_passwords() -> bytes:
@@ -317,11 +352,10 @@ def _xlsx_bytes_passwords() -> bytes:
     ws.cell(row=1, column=1, value="使用说明").font = Font(bold=True, color="FF2563EB")
     instructions = [
         "本表用于批量导入密码。第 1 行为说明，导入时会自动忽略。",
-        "表头为：标题 / 账号 / 密码明文 / 备注 / 所属分组，其下方即为数据行。",
-        "「标题」为密码条目的名称（如网站 / 应用名）；「账号」为登录用户名 / 邮箱。",
-        "「密码明文」即你要保存的真实账号密码 / 密钥本身；它与导入页面填写的",
-        "「加密密码（解密密码）」是两回事 —— 加密密码仅用于解锁本批导入的条目。",
-        "「所属分组」须是系统里已存在的分组名；不存在则该行报错。",
+        "表头为：账号 / 密码明文 / 备注，其下方即为数据行。",
+        "「账号」为登录用户名 / 邮箱；「密码明文」即你要保存的真实密码 / 密钥本身；「备注」为可选说明。",
+        "「密码明文」与导入页面填写的「加密密码（解密密码）」是两回事 —— 加密密码仅用于解锁本批导入的条目。",
+        "「所属分组」请在导入页面的下拉框中选择（对所有行生效），无需在模板里填写。",
         "加密方式 / 加密密码 / 密钥在导入页面上统一选择，对所有行生效。",
         "下方两行示例数据仅作演示，上传前请整行删除。",
     ]
@@ -338,8 +372,8 @@ def _xlsx_bytes_passwords() -> bytes:
         c.alignment = center
 
     examples = [
-        ["腾讯云控制台", "alice@example.com", "Alice@2026", "示例账号", "研发部"],
-        ["GitHub", "bob", "BobSecret!9", "示例账号2", "测试组"],
+        ["alice@example.com", "Alice@2026", "示例账号"],
+        ["bob", "BobSecret!9", "示例账号2"],
     ]
     for r, row in enumerate(examples, start=body_start + 1):
         for c_idx, val in enumerate(row, start=1):
@@ -378,14 +412,11 @@ def download_password_template(
 # ────────────────────── 上传解析 ──────────────────────
 
 def _norm_pwd_row(row: dict) -> tuple:
-    """把一行数据归一化成 (title, username, secret, notes, group_names)。"""
-    title = (row.get("title") or "").strip()
+    """把一行数据归一化成 (username, secret, notes)。所属分组由页面统一选择，不在模板内。"""
     username = (row.get("username") or "").strip()
     secret = (row.get("secret") or "").strip()  # 密码明文（真实密码）
     notes = (row.get("notes") or "").strip()
-    group_raw = (row.get("group") or "").strip()
-    group_names = [g.strip() for g in group_raw.split(",") if g.strip()]
-    return title, username, secret, notes, group_names
+    return username, secret, notes
 
 
 def _read_xlsx_passwords(content: bytes) -> List[dict]:
@@ -408,7 +439,7 @@ def _read_xlsx_passwords(content: bytes) -> List[dict]:
             raw_headers = [str(x).strip() for x in row]
             if "密码明文" not in raw_headers:
                 continue
-            headers = {"title": "标题", "username": "账号", "secret": "密码明文", "notes": "备注", "group": "所属分组"}
+            headers = {"username": "账号", "secret": "密码明文", "notes": "备注"}
             continue
         full = list(r)
         cells = {}
@@ -444,6 +475,7 @@ async def import_passwords(
     algorithm: str = Form("symmetric"),
     entry_password: str = Form(""),
     orgkey_id: Optional[int] = Form(None),
+    group_id: int = Form(...),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -473,11 +505,20 @@ async def import_passwords(
     if not data_rows:
         raise HTTPException(
             status_code=400,
-            detail="未找到可导入的数据行；请检查表头是否为「标题 / 账号 / 密码明文 / 备注 / 所属分组」",
+            detail="未找到可导入的数据行；请检查表头是否为「账号 / 密码明文 / 备注」",
         )
 
     if not entry_password:
         raise HTTPException(status_code=400, detail="请先在页面选择「加密密码（解密密码）」再导入")
+
+    # 校验页面选择的所属分组（对所有导入行生效）
+    g = db.query(Group).filter_by(id=group_id).first()
+    if not g:
+        raise HTTPException(status_code=400, detail=f"所属分组（id={group_id}）不存在")
+    try:
+        ensure_group_access(db, user, group_id)
+    except HTTPException:
+        raise HTTPException(status_code=403, detail="无权访问所选分组")
 
     algo = (algorithm or "symmetric").lower()
     if algo not in VALID_ALGOS:
@@ -487,7 +528,7 @@ async def import_passwords(
     created = skipped = errored = 0
 
     for idx, raw_row in enumerate(data_rows, start=1):
-        title, username, secret, notes, group_names = _norm_pwd_row(raw_row)
+        username, secret, notes = _norm_pwd_row(raw_row)
         if not username and not secret:
             results.append(PasswordImportRow(row=idx, username="", status="skipped", message="空行已跳过"))
             skipped += 1
@@ -499,33 +540,6 @@ async def import_passwords(
             continue
         if not secret:
             results.append(PasswordImportRow(row=idx, username=username, status="error", message="密码明文为空"))
-            errored += 1
-            continue
-
-        # 分组解析：取第一个存在的分组作为目标；全部缺失则报错
-        group_ids: List[int] = []
-        missing: List[str] = []
-        for n in group_names:
-            g = db.query(Group).filter_by(name=n).first()
-            if g:
-                group_ids.append(g.id)
-            else:
-                missing.append(n)
-        if not group_ids:
-            results.append(PasswordImportRow(
-                row=idx, username=username, status="error",
-                message=f"分组 [{', '.join(group_names)}] 不存在",
-            ))
-            errored += 1
-            continue
-
-        group_id = group_ids[0]
-        try:
-            ensure_group_access(db, user, group_id)
-        except HTTPException:
-            results.append(PasswordImportRow(
-                row=idx, username=username, status="error", message="无权访问目标分组",
-            ))
             errored += 1
             continue
 
@@ -557,7 +571,7 @@ async def import_passwords(
             continue
 
         entry = PasswordEntry(
-            title=title,
+            title=username,
             username=username,
             notes=notes,
             group_id=group_id,
@@ -578,7 +592,7 @@ async def import_passwords(
             password_id=entry.id,
             group_id=group_id,
             action="create",
-            title=title,
+            title=username,
             username=username,
             algorithm=algo,
             ciphertext=entry.ciphertext,
@@ -588,7 +602,7 @@ async def import_passwords(
         ))
         db.commit()
         created += 1
-        msg = "已创建" + (f"（已忽略不存在分组：{', '.join(missing)}）" if missing else "")
+        msg = "已创建"
         results.append(PasswordImportRow(row=idx, username=username, status="created", message=msg))
 
     return PasswordImportResponse(

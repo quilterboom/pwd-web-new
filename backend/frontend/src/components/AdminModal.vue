@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { state, api, refreshMe, showToast } from '../store'
 import { fmtTime, HISTORY_ACTION_LABELS, humanizeComment, algoBadge, groupName } from '../utils'
 import UserFormModal from './UserFormModal.vue'
@@ -9,43 +9,25 @@ import UserBatchModal from './UserBatchModal.vue'
 const emit = defineEmits(['close'])
 
 const subtab = ref('users')
+// 当前页数据（来自后台分页接口，仅本页条目）
 const users = ref([])
 const groups = ref([])
 const audit = ref([])
+const usersTotal = ref(0)
+const groupsTotal = ref(0)
+const auditTotal = ref(0)
+
 const auditFilter = ref('all')
 
 const userSearch = ref('')
 const groupSearch = ref('')
 const auditSearch = ref('')
 
-const filteredUsers = computed(() => {
-  const q = userSearch.value.trim().toLowerCase()
-  if (!q) return users.value
-  return users.value.filter(
-    (u) =>
-      u.username.toLowerCase().includes(q) ||
-      (u.groups || []).some((g) => g.name.toLowerCase().includes(q)) ||
-      (u.admin_groups || []).some((g) => g.name.toLowerCase().includes(q))
-  )
-})
-const filteredGroups = computed(() => {
-  const q = groupSearch.value.trim().toLowerCase()
-  if (!q) return groups.value
-  return groups.value.filter(
-    (g) =>
-      g.name.toLowerCase().includes(q) ||
-      (g.members || []).some((m) => m.username.toLowerCase().includes(q))
-  )
-})
-const filteredAudit = computed(() => {
-  const q = auditSearch.value.trim().toLowerCase()
-  if (!q) return audit.value
-  return audit.value.filter((r) =>
-    [r.username, r.title, r.group_name, r.changed_by, humanizeComment(r.comment || '')]
-      .filter(Boolean)
-      .some((f) => f.toLowerCase().includes(q))
-  )
-})
+// 分页状态（后台分页）。pageSize 同时驱动三个区块
+const pageSize = ref(10)
+const userPage = ref(1)
+const groupPage = ref(1)
+const auditPage = ref(1)
 
 const showUserForm = ref(false)
 const showGroupForm = ref(false)
@@ -53,33 +35,69 @@ const showUserBatch = ref(false)
 const editingUser = ref(null)
 const editingGroup = ref(null)
 
+function buildQs(page, size, extra) {
+  const p = new URLSearchParams()
+  p.set('page', String(page))
+  p.set('page_size', String(size))
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      if (v !== '' && v != null) p.set(k, String(v))
+    }
+  }
+  return p.toString()
+}
+
+// ── 后台分页拉取 ──
+async function fetchUsers() {
+  const qs = buildQs(userPage.value, pageSize.value, { q: userSearch.value.trim() })
+  const resp = await api('/api/admin/users?' + qs)
+  users.value = resp.items
+  usersTotal.value = resp.total
+}
+async function fetchGroups() {
+  const qs = buildQs(groupPage.value, pageSize.value, { q: groupSearch.value.trim() })
+  const resp = await api('/api/admin/groups?' + qs)
+  groups.value = resp.items
+  groupsTotal.value = resp.total
+}
+async function fetchAudit() {
+  const extra = {}
+  if (auditFilter.value && auditFilter.value !== 'all') extra.action = auditFilter.value
+  if (auditSearch.value.trim()) extra.q = auditSearch.value.trim()
+  const qs = buildQs(auditPage.value, pageSize.value, extra)
+  const resp = await api('/api/admin/audit?' + qs)
+  audit.value = resp.items
+  auditTotal.value = resp.total
+}
+
+// 全量加载（供新增 / 编辑分组弹框的成员列表、各下拉框使用；用超大 page_size 取全部）
 async function loadUsers() {
-  users.value = await api('/api/admin/users')
-  // 同步给全局 state，供「新增/编辑分组」弹框的成员列表使用
-  state.users = users.value
+  const resp = await api('/api/admin/users?page_size=5000')
+  state.users = resp.items
 }
 async function loadGroups() {
-  groups.value = await api('/api/admin/groups')
-}
-async function loadAudit() {
-  const q = auditFilter.value && auditFilter.value !== 'all' ? '?action=' + encodeURIComponent(auditFilter.value) : ''
-  audit.value = await api('/api/admin/audit' + q)
+  const resp = await api('/api/admin/groups?page_size=5000')
+  state.groups = resp.items
 }
 
 async function switchSub(sub) {
   subtab.value = sub
-  if (sub === 'audit') loadAudit()
+  if (sub === 'audit') {
+    auditPage.value = 1
+    fetchAudit()
+  }
 }
 
 function setAuditFilter(act, btn) {
   auditFilter.value = act
   document.querySelectorAll('#audit-filter .seg').forEach((x) => x.classList.toggle('active', x === btn))
-  loadAudit()
+  auditPage.value = 1
+  fetchAudit()
 }
 
 onMounted(async () => {
   try {
-    await Promise.all([loadUsers(), loadGroups()])
+    await Promise.all([fetchUsers(), fetchGroups(), loadUsers(), loadGroups()])
   } catch (e) {
     showToast('加载管理数据失败：' + e.message)
   }
@@ -87,12 +105,12 @@ onMounted(async () => {
 
 async function afterUserSaved() {
   showUserForm.value = false
-  await loadUsers()
+  await Promise.all([loadUsers(), fetchUsers()])
   await refreshMe()
 }
 async function afterGroupSaved() {
   showGroupForm.value = false
-  await loadGroups()
+  await Promise.all([loadGroups(), fetchGroups()])
   await refreshMe()
 }
 
@@ -102,7 +120,8 @@ async function deleteUser(id) {
   try {
     await api('/api/admin/users/' + id, { method: 'DELETE' })
     showToast('已删除用户')
-    await loadUsers()
+    userPage.value = 1
+    await Promise.all([loadUsers(), fetchUsers()])
   } catch (e) {
     showToast('删除失败：' + e.message)
   }
@@ -113,11 +132,53 @@ async function deleteGroup(id) {
   try {
     await api('/api/admin/groups/' + id, { method: 'DELETE' })
     showToast('已删除分组')
-    await loadGroups()
+    groupPage.value = 1
+    await Promise.all([loadGroups(), fetchGroups()])
   } catch (e) {
     showToast('删除失败：' + e.message)
   }
 }
+
+// ── 翻页 ──
+function gotoUsers(delta) {
+  userPage.value += delta
+  fetchUsers()
+}
+function gotoGroups(delta) {
+  groupPage.value += delta
+  fetchGroups()
+}
+function gotoAudit(delta) {
+  auditPage.value += delta
+  fetchAudit()
+}
+
+const userPages = computed(() => Math.max(1, Math.ceil(usersTotal.value / pageSize.value)))
+const groupPages = computed(() => Math.max(1, Math.ceil(groupsTotal.value / pageSize.value)))
+const auditPages = computed(() => Math.max(1, Math.ceil(auditTotal.value / pageSize.value)))
+
+// 搜索 / 筛选变化 → 回到第 1 页并重新请求
+watch(userSearch, () => {
+  userPage.value = 1
+  fetchUsers()
+})
+watch(groupSearch, () => {
+  groupPage.value = 1
+  fetchGroups()
+})
+watch([auditSearch, auditFilter], () => {
+  auditPage.value = 1
+  fetchAudit()
+})
+// 每页条数变化 → 三个区块回到第 1 页并重请求
+watch(pageSize, () => {
+  userPage.value = 1
+  groupPage.value = 1
+  auditPage.value = 1
+  fetchUsers()
+  fetchGroups()
+  if (subtab.value === 'audit') fetchAudit()
+})
 </script>
 
 <template>
@@ -148,7 +209,7 @@ async function deleteGroup(id) {
             <tr><th>用户名</th><th>管理员</th><th>所属分组</th><th>操作</th></tr>
           </thead>
           <tbody>
-            <tr v-for="u in filteredUsers" :key="u.id">
+            <tr v-for="u in users" :key="u.id">
               <td>{{ u.username }}</td>
               <td>
                 <span v-if="u.is_admin">是</span>
@@ -168,9 +229,19 @@ async function deleteGroup(id) {
                 </div>
               </td>
             </tr>
-            <tr v-if="!filteredUsers.length"><td colspan="4" style="color:#6b7280">无匹配的用户</td></tr>
+            <tr v-if="!users.length"><td colspan="4" style="color:#6b7280">无匹配的用户</td></tr>
           </tbody>
         </table>
+        <div class="pager" v-if="usersTotal > 0">
+          <select class="pager-size" v-model="pageSize">
+            <option :value="10">10 条/页</option>
+            <option :value="20">20 条/页</option>
+            <option :value="50">50 条/页</option>
+          </select>
+          <button class="btn ghost small" :disabled="userPage <= 1" @click="gotoUsers(-1)">‹ 上一页</button>
+          <span class="pager-info">第 {{ userPage }} / {{ userPages }} 页 · 共 {{ usersTotal }} 条</span>
+          <button class="btn ghost small" :disabled="userPage >= userPages" @click="gotoUsers(1)">下一页 ›</button>
+        </div>
       </section>
 
       <!-- 分组 -->
@@ -178,7 +249,7 @@ async function deleteGroup(id) {
         <div class="toolbar">
           <div class="spacer"></div>
           <div class="toolbar-group">
-            <input class="search-input" v-model="groupSearch" type="text" placeholder="搜索分组名 / 成员…" />
+            <input class="search-input" v-model="groupSearch" type="text" placeholder="搜索分组名…" />
           </div>
           <button class="btn primary" @click="(editingGroup = null, showGroupForm = true)">＋ 新增分组</button>
         </div>
@@ -187,7 +258,7 @@ async function deleteGroup(id) {
             <tr><th>分组名</th><th>成员数</th><th>成员</th><th>操作</th></tr>
           </thead>
           <tbody>
-            <tr v-for="g in filteredGroups" :key="g.id">
+            <tr v-for="g in groups" :key="g.id">
               <td>{{ g.name }}</td>
               <td>{{ g.member_count }}</td>
               <td>{{ g.members.map((m) => m.username).join('、') || '—' }}</td>
@@ -198,9 +269,19 @@ async function deleteGroup(id) {
                 </div>
               </td>
             </tr>
-            <tr v-if="!filteredGroups.length"><td colspan="4" style="color:#6b7280">无匹配的分组</td></tr>
+            <tr v-if="!groups.length"><td colspan="4" style="color:#6b7280">无匹配的分组</td></tr>
           </tbody>
         </table>
+        <div class="pager" v-if="groupsTotal > 0">
+          <select class="pager-size" v-model="pageSize">
+            <option :value="10">10 条/页</option>
+            <option :value="20">20 条/页</option>
+            <option :value="50">50 条/页</option>
+          </select>
+          <button class="btn ghost small" :disabled="groupPage <= 1" @click="gotoGroups(-1)">‹ 上一页</button>
+          <span class="pager-info">第 {{ groupPage }} / {{ groupPages }} 页 · 共 {{ groupsTotal }} 条</span>
+          <button class="btn ghost small" :disabled="groupPage >= groupPages" @click="gotoGroups(1)">下一页 ›</button>
+        </div>
       </section>
 
       <!-- 审计 -->
@@ -221,21 +302,30 @@ async function deleteGroup(id) {
         </div>
         <table class="pw-table hist-table">
           <thead>
-            <tr><th>时间</th><th>动作</th><th>账号</th><th>标题</th><th>分组</th><th>操作人</th><th>说明</th></tr>
+            <tr><th>时间</th><th>动作</th><th>账号</th><th>分组</th><th>操作人</th><th>说明</th></tr>
           </thead>
           <tbody>
-            <tr v-for="r in filteredAudit" :key="r.id">
+            <tr v-for="r in audit" :key="r.id">
               <td>{{ fmtTime(r.changed_at) }}</td>
               <td :class="'act-' + r.action">{{ HISTORY_ACTION_LABELS[r.action] || r.action }}</td>
               <td>{{ r.username || '' }}</td>
-              <td>{{ r.title || '' }}</td>
               <td>{{ r.group_name || '—' }}</td>
               <td>{{ r.changed_by || '' }}</td>
-              <td>{{ humanizeComment(r.comment || '') }}</td>
+              <td><div class="comment-cell" :title="humanizeComment(r.comment || '')">{{ humanizeComment(r.comment || '') }}</div></td>
             </tr>
-            <tr v-if="!filteredAudit.length"><td colspan="7" style="color:#6b7280">无匹配的审计记录</td></tr>
+            <tr v-if="!audit.length"><td colspan="6" style="color:#6b7280">无匹配的审计记录</td></tr>
           </tbody>
         </table>
+        <div class="pager" v-if="auditTotal > 0">
+          <select class="pager-size" v-model="pageSize">
+            <option :value="10">10 条/页</option>
+            <option :value="20">20 条/页</option>
+            <option :value="50">50 条/页</option>
+          </select>
+          <button class="btn ghost small" :disabled="auditPage <= 1" @click="gotoAudit(-1)">‹ 上一页</button>
+          <span class="pager-info">第 {{ auditPage }} / {{ auditPages }} 页 · 共 {{ auditTotal }} 条</span>
+          <button class="btn ghost small" :disabled="auditPage >= auditPages" @click="gotoAudit(1)">下一页 ›</button>
+        </div>
         <p class="audit-tip">说明：删除密码会在此生成一条「删除」记录，含操作人与账号，便于管理员审计。</p>
       </section>
 
@@ -249,3 +339,25 @@ async function deleteGroup(id) {
     <UserBatchModal v-if="showUserBatch" @close="showUserBatch = false" @imported="loadUsers" />
   </div>
 </template>
+
+<style scoped>
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.pager-info {
+  font-size: 13px;
+  color: #6b7280;
+}
+.pager-size {
+  padding: 5px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+  color: #111827;
+}
+</style>
