@@ -34,8 +34,9 @@ export function groupName(groups, id) {
 }
 
 const HISTORY_FIELD_LABELS = {
-  title: '标题',
-  username: '账号',
+  title: '密码文件名称',
+  username: '用户名',
+  system: '系统',
   notes: '备注',
   secret: '密码明文',
   entry_password: '解密密码',

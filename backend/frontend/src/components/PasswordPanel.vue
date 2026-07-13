@@ -27,13 +27,20 @@ const showImport = ref(false)
 const editingEntry = ref(null)
 const viewingId = ref(null)
 const historyId = ref(null)
+const filterGroup = ref('')
+const filterSystem = ref('')
 
 // ── 后台分页展示（state.entries 仍保持全量，供查看 / 导出 / 查重使用）──
 const entries = ref([])
 const entriesTotal = ref(0)
+const loaded = ref(false) // 首次拉取完成后再决定空态，避免加载闪烁
 const page = ref(1)
 const pageSize = ref(10)
 const pages = computed(() => Math.max(1, Math.ceil(entriesTotal.value / pageSize.value)))
+// 是否处于「有筛选条件」状态（分组 / 系统 / 关键字任一非空）
+const hasFilter = computed(
+  () => !!(search.value.trim() || filterGroup.value || filterSystem.value.trim())
+)
 
 async function fetchEntries() {
   try {
@@ -41,9 +48,12 @@ async function fetchEntries() {
     qs.set('page', String(page.value))
     qs.set('page_size', String(pageSize.value))
     if (search.value.trim()) qs.set('q', search.value.trim())
+    if (filterGroup.value) qs.set('group_id', String(filterGroup.value))
+    if (filterSystem.value.trim()) qs.set('system', filterSystem.value.trim())
     const resp = await api('/api/passwords?' + qs.toString())
     entries.value = resp.items
     entriesTotal.value = resp.total
+    loaded.value = true
   } catch (e) {
     showToast('加载密码失败：' + e.message)
   }
@@ -74,6 +84,10 @@ watch(search, () => {
   fetchEntries()
 })
 watch(pageSize, () => {
+  page.value = 1
+  fetchEntries()
+})
+watch([filterGroup, filterSystem], () => {
   page.value = 1
   fetchEntries()
 })
@@ -109,10 +123,6 @@ function onImported() {
   fetchEntries()
 }
 function openExport() {
-  if (!state.isAdmin) {
-    showToast('导出功能仅管理员可用')
-    return
-  }
   if (!state.selectedIds.length) {
     showToast('请先勾选要导出的密码')
     return
@@ -129,19 +139,25 @@ function openExport() {
           <input type="checkbox" :checked="allSelected" @change="toggleAll" /> 全选
         </label>
         <button
-          v-if="state.isAdmin"
           id="export-btn"
           class="btn ghost"
           :disabled="!state.selectedIds.length"
-          title="批量导出所选密码（仅管理员）"
+          title="批量导出所选密码"
           @click="openExport"
         >
           📤 导出{{ state.selectedIds.length ? ' (' + state.selectedIds.length + ')' : '' }}
         </button>
         <button class="btn ghost" title="批量导入密码" @click="showImport = true">📥 导入</button>
       </div>
+      <div class="toolbar-group">
+        <select v-model="filterGroup" class="filter-select" title="按分组筛选">
+          <option value="">全部分组</option>
+          <option v-for="g in state.groups" :key="g.id" :value="String(g.id)">{{ g.name }}</option>
+        </select>
+        <input v-model="filterSystem" type="text" class="filter-input" placeholder="筛选系统…" />
+      </div>
       <div class="toolbar-group flex-grow">
-        <input id="search-input" v-model="search" type="text" placeholder="搜索账号 / 标题 / 备注…" />
+        <input id="search-input" v-model="search" type="text" placeholder="搜索用户名 / 密码文件名称 / 系统 / 备注…" />
       </div>
       <div class="toolbar-group toolbar-actions">
         <button class="btn primary" title="新增一条密码" @click="openAdd">＋ 新增</button>
@@ -154,7 +170,9 @@ function openExport() {
       <thead>
         <tr>
           <th></th>
-          <th>账号</th>
+          <th>密码文件名称</th>
+          <th>用户名</th>
+          <th>系统</th>
           <th>加密方式</th>
           <th>分组</th>
           <th>更新时间</th>
@@ -167,7 +185,9 @@ function openExport() {
           <td class="col-select">
             <input type="checkbox" :checked="isSelected(e.id)" @change="toggleSelect(e.id)" />
           </td>
+          <td>{{ e.title || e.username || '未命名' }}</td>
           <td>{{ e.username || '未填' }}</td>
+          <td>{{ e.system || '—' }}</td>
           <td>
             <span class="badge" :class="algoBadge(e.algorithm).cls">{{ algoBadge(e.algorithm).label }}</span>
             <span v-if="e.needs_password" title="需输入解密密码才能查看"> 🔒</span>
@@ -185,8 +205,8 @@ function openExport() {
             </div>
           </td>
         </tr>
-        <tr v-if="!entries.length && state.entries.length">
-          <td colspan="7" style="color:#6b7280">无匹配结果</td>
+        <tr v-if="loaded && !entries.length && (entriesTotal > 0 || hasFilter)">
+          <td colspan="9" style="color:#6b7280">无匹配结果</td>
         </tr>
       </tbody>
     </table>
@@ -202,7 +222,7 @@ function openExport() {
       <button class="btn ghost small" :disabled="page >= pages" @click="goto(1)">下一页 ›</button>
     </div>
 
-    <div v-if="!state.entries.length" class="empty">暂无密码记录，点击右上角「新增密码」开始。</div>
+    <div v-if="loaded && entriesTotal === 0 && !hasFilter" class="empty">暂无密码记录，点击右上角「新增密码」开始。</div>
 
     <PasswordFormModal v-if="showForm" :entry="editingEntry" @close="showForm = false" @saved="afterSaved" />
     <ViewModal v-if="showView" :id="viewingId" @close="showView = false" />

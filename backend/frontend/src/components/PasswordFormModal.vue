@@ -9,6 +9,8 @@ const emit = defineEmits(['close', 'saved'])
 const isAdd = computed(() => !props.entry)
 
 const form = reactive({
+  title: '',
+  system: '',
   username: '',
   secret: '',
   notes: '',
@@ -59,6 +61,8 @@ function applyAlgoUI() {
 }
 
 function resetForAdd() {
+  form.title = ''
+  form.system = ''
   form.username = ''
   form.secret = ''
   form.notes = ''
@@ -82,6 +86,8 @@ function resetForAdd() {
 async function startEdit() {
   const rec = props.entry
   originalAlgorithm = rec.algorithm
+  form.title = rec.title || ''
+  form.system = rec.system || ''
   form.username = rec.username
   form.notes = rec.notes || ''
   form.comment = ''
@@ -161,10 +167,13 @@ async function save() {
   const secret = form.secret
   const algo = form.algorithm
   const orgkeyId = form.orgkeyId ? Number(form.orgkeyId) : null
+  if (!form.title.trim()) return (formError.value = '请输入密码文件名称')
   if (!secret) return (formError.value = '请输入密码 / 密钥明文')
   if (!state.groups.length) return (formError.value = '你没有可用的分组，无法创建')
 
   const payload = {
+    title: form.title.trim(),
+    system: form.system.trim(),
     username: form.username.trim(),
     notes: form.notes,
     comment: form.comment,
@@ -180,7 +189,7 @@ async function save() {
       (e) => e.group_id === gid && (e.username || '').trim().toLowerCase() === uName && e.algorithm === algo
     )
     if (dup)
-      return (formError.value = `该分组下已存在账号「${form.username.trim()}」且加密方式相同（${algo}），请勿重复新增`)
+      return (formError.value = `该分组下已存在用户名「${form.username.trim()}」且加密方式相同（${algo}），请勿重复新增`)
     payload.group_id = gid
     payload.secret = secret
     payload.algorithm = algo
@@ -243,7 +252,13 @@ onMounted(() => {
         <div v-if="lockError" class="error">{{ lockError }}</div>
       </div>
 
-      <label>账号 *</label>
+      <label>密码文件名称 *</label>
+      <input v-model="form.title" :disabled="formLocked" type="text" placeholder="例如：邮箱登录密码 / 服务器 root" />
+
+      <label>系统</label>
+      <input v-model="form.system" :disabled="formLocked" type="text" placeholder="例如：邮箱系统 / 生产服务器（可选）" />
+
+      <label>用户名 *</label>
       <input v-model="form.username" :disabled="formLocked" type="text" />
 
       <label>加密方式 *</label>

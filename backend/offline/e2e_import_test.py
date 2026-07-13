@@ -1,10 +1,14 @@
-"""端到端验证：密码批量导入 + 模板下载 + 导出仅管理员 + 导入后解密。
+"""端到端验证：密码批量导入 + 模板下载 + 导出权限（普通用户亦可）+ 导入后解密。
 
-加密在服务端容器（pm-test2:9012）内进行，本机只做 HTTP 客户端，安全。
+加密在服务端容器内进行，本机只做 HTTP 客户端，安全。
+目标地址通过环境变量 BASE 指定（默认 http://localhost:9012）。
+xlsx 直接在测试进程内用 openpyxl 生成，无需 docker exec。
 """
-import csv, io, json, struct, subprocess, urllib.request, urllib.error
+import csv, io, json, os, struct, subprocess, urllib.request, urllib.error
+from openpyxl import Workbook
+from openpyxl.styles import Font
 
-BASE = "http://localhost:9012"
+BASE = os.getenv("BASE", "http://localhost:9012")
 
 # ── SM3（与前端一致，用于 SCRAM 登录）──
 _SM3_IV = [0x7380166f, 0x4914b2b9, 0x172442d7, 0xda8a0600,
@@ -116,7 +120,7 @@ gname = groups[0]["name"]
 gid = groups[0]["id"]
 print("使用分组:", gname, "(id=%s)" % gid)
 
-print("\n=== 4. 非管理员导出应 403 ===")
+print("\n=== 4. 非管理员导出应可达（Req1：普通用户也能导出，不再 403） ===")
 # 创建非管理员
 st, cu = req("POST", "/api/admin/users",
              {"username": "imp_tester", "password": "ImpTester!1", "is_admin": False, "group_ids": [gid]},
@@ -124,31 +128,25 @@ st, cu = req("POST", "/api/admin/users",
 print("创建测试用户:", st)
 uid = cu["id"] if st == 200 else None
 tester = scram_login("imp_tester", "ImpTester!1")
+# 空 ids 会触发 400（参数校验），但绝不应是 403（管理员门禁已移除）
 st, _ = req("POST", "/api/passwords/export", {"ids": [], "format": "json", "plaintext": True}, token=tester)
-print("非管理员导出 ->", st, "(期望 403)")
-assert st == 403, "非管理员不应能导出"
+print("非管理员导出(空) ->", st, "(期望 200 或 400，但不再是 403)")
+assert st != 403, "非管理员不应被禁止导出（Req1 已放开导出权限）"
 
-print("\n=== 5. 管理员导出可达（空 ids -> 400 而非 403） ===")
+print("\n=== 5. 管理员导出可达（空 ids -> 400 参数校验） ===")
 st, _ = req("POST", "/api/passwords/export", {"ids": [], "format": "json", "plaintext": True}, token=admin)
-print("管理员导出(空) ->", st, "(期望 400，证明已过管理员校验)")
+print("管理员导出(空) ->", st, "(期望 400，参数校验而非权限校验)")
 
-print("\n=== 6. xlsx 批量导入（容器内生成，表头：标题/账号/密码明文/备注/所属分组） ===")
-gen6 = f'''
-import sys; sys.path.insert(0,"/app")
-from openpyxl import Workbook
-wb=Workbook(); ws=wb.active; ws.title="t"
-ws.append(["标题","账号","密码明文","备注","所属分组"])
-ws.append(["网站A","imp_a","SecretA!1","导入测试","{gname}"])
-ws.append(["网站B","imp_b","SecretB!2","导入测试","{gname}"])
+print("\n=== 6. xlsx 批量导入（表头：标题/账号/密码明文/备注/所属分组） ===")
+wb = Workbook(); ws = wb.active; ws.title = "t"
+ws.append(["标题", "账号", "密码明文", "备注", "所属分组"])
+ws.append(["网站A", "imp_a", "SecretA!1", "导入测试", gname])
+ws.append(["网站B", "imp_b", "SecretB!2", "导入测试", gname])
 wb.save("/tmp/imp6.xlsx")
-print("GEN OK")
-'''
-subprocess.run(["docker", "exec", "pm-test2", "python3", "-c", gen6], check=True)
-subprocess.run(["docker", "cp", "pm-test2:/tmp/imp6.xlsx", "/tmp/imp6.xlsx"], check=True)
 with open("/tmp/imp6.xlsx", "rb") as f:
     xlsx6 = f.read()
 body, ctype = multipart(
-    {"algorithm": "symmetric", "entry_password": "ImpPass!2026"},
+    {"algorithm": "symmetric", "entry_password": "ImpPass!2026", "group_id": str(gid)},
     ("file", "import_test.xlsx", xlsx6, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
 )
 st, resp = req("POST", "/api/passwords/import", body=body, token=admin,
@@ -165,31 +163,23 @@ st, full = req("POST", f"/api/passwords/{imp_a['id']}/unlock", {"entry_password"
 print("解锁 imp_a ->", st, "| secret:", full.get("secret"))
 assert st == 200 and full["secret"] == "SecretA!1"
 
-print("\n=== 8. xlsx 导入回环（容器内生成 xlsx 再导入） ===")
-docker_gen = f'''
-import sys; sys.path.insert(0,"/app")
-from openpyxl import Workbook
-from openpyxl.styles import Font
-wb=Workbook(); ws=wb.active; ws.title="t"
-ws.cell(row=1,column=1,value="使用说明").font=Font(bold=True)
-ws.cell(row=2,column=1,value="说明行2")
-hdr=5
-for c,h in enumerate(["标题","账号","密码明文","备注","所属分组"],start=1):
-    ws.cell(row=hdr,column=c,value=h)
-data=[["网站C","imp_c","SecretC!3","xlsx测试","{gname}"],["网站D","imp_d","SecretD!4","xlsx测试","{gname}"]]
-for r,row in enumerate(data,start=hdr+1):
-    for c,v in enumerate(row,start=1):
-        ws.cell(row=r,column=c,value=v)
+print("\n=== 8. xlsx 导入回环（生成 xlsx 再导入） ===")
+wb = Workbook(); ws = wb.active; ws.title = "t"
+ws.cell(row=1, column=1, value="使用说明").font = Font(bold=True)
+ws.cell(row=2, column=1, value="说明行2")
+hdr = 5
+for c, h in enumerate(["标题", "账号", "密码明文", "备注", "所属分组"], start=1):
+    ws.cell(row=hdr, column=c, value=h)
+data = [["网站C", "imp_c", "SecretC!3", "xlsx测试", gname],
+        ["网站D", "imp_d", "SecretD!4", "xlsx测试", gname]]
+for r, row in enumerate(data, start=hdr + 1):
+    for c, v in enumerate(row, start=1):
+        ws.cell(row=r, column=c, value=v)
 wb.save("/tmp/imp.xlsx")
-print("GEN OK")
-'''
-import subprocess
-subprocess.run(["docker","exec","pm-test2","python3","-c",docker_gen],check=True)
-subprocess.run(["docker","cp","pm-test2:/tmp/imp.xlsx","/tmp/imp.xlsx"],check=True)
-with open("/tmp/imp.xlsx","rb") as f:
+with open("/tmp/imp.xlsx", "rb") as f:
     xlsx_data = f.read()
 body, ctype = multipart(
-    {"algorithm": "symmetric", "entry_password": "ImpPass!2026"},
+    {"algorithm": "symmetric", "entry_password": "ImpPass!2026", "group_id": str(gid)},
     ("file", "imp.xlsx", xlsx_data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
 )
 st, resp = req("POST", "/api/passwords/import", body=body, token=admin,

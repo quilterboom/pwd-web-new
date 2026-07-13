@@ -105,7 +105,7 @@ class PasswordEntry(Base):
     __tablename__ = "passwords"
 
     id = Column(Integer, primary_key=True)
-    title = Column(String(255), nullable=True, default="")  # 已取消强制标题；保留字段以便审计/兼容旧记录
+    title = Column(String(255), nullable=True, default="")  # 密码文件名称（条目显示名）；新增时由前端必填
     username = Column(String(255), default="")
     # algorithm: 'gpg' | 'sm2' 为 legacy 方案，'symmetric' 为每条独立密码加密
     algorithm = Column(String(16), nullable=False, default="symmetric")
@@ -116,6 +116,7 @@ class PasswordEntry(Base):
     entry_salt = Column(String(64), default="")  # entry 方案：PBKDF2-SM3 的 salt（hex）
     entry_iv = Column(String(64), default="")  # entry 方案：SM4-CBC 的 iv（hex）
     notes = Column(Text, default="")
+    system = Column(String(255), default="")  # 系统（如邮箱 / 服务器 / GitLab），自由文本
     group_id = Column(Integer, index=True, nullable=True)  # 绑定分组
     orgkey_id = Column(Integer, ForeignKey("org_keys.id", ondelete="SET NULL"), index=True, nullable=True)  # legacy 方案使用的 OrgKey（选用，不填则用服务端 KeyRecord）
     created_at = Column(DateTime, default=_utcnow)
@@ -136,6 +137,7 @@ class History(Base):
     action = Column(String(16), nullable=False)  # create | update | delete
     title = Column(String(255))
     username = Column(String(255))
+    system = Column(String(255), default="")  # 系统（与 PasswordEntry.system 对应，用于审计）
     algorithm = Column(String(16))
     ciphertext = Column(Text)  # 该次操作时的密文快照（用于审计，不包含明文）
     notes = Column(Text)

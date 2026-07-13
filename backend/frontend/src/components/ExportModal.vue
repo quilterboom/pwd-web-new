@@ -90,7 +90,7 @@ async function doExport() {
         <div class="exp-list">
           <div v-for="e in selectedEntries" :key="e.id" class="exp-row">
             <div class="exp-row-info">
-              <div class="exp-row-name" :title="e.username">{{ e.username }}</div>
+              <div class="exp-row-name" :title="e.username">{{ e.title || e.username }}</div>
               <div class="exp-row-algo">{{ algoText(e.algorithm) }}</div>
             </div>
             <input type="password" v-model="perRow[e.id]" :placeholder="e.username ? '该条目解密密码' : ''" autocomplete="off" />

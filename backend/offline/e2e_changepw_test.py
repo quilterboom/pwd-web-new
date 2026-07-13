@@ -8,11 +8,12 @@
 - 管理员亦可自助修改自己的密码
 """
 import json
+import os
 import struct
 import urllib.request
 import urllib.error
 
-BASE = "http://localhost:9012"
+BASE = os.getenv("BASE", "http://localhost:9012")
 ADMIN = "admin"
 ADMIN_PW = "TestPass!2026"
 

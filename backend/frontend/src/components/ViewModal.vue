@@ -66,8 +66,10 @@ function copySecret() {
   <div class="modal">
     <div class="modal-card">
       <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
-      <h2>查看：{{ entry ? entry.username : '' }}</h2>
-      <div class="kv"><span>账号</span><b>{{ entry ? entry.username : '—' }}</b></div>
+      <h2>查看：{{ entry ? (entry.title || entry.username) : '' }}</h2>
+      <div class="kv"><span>密码文件名称</span><b>{{ entry ? (entry.title || '—') : '—' }}</b></div>
+      <div class="kv"><span>系统</span><b>{{ entry ? (entry.system || '—') : '—' }}</b></div>
+      <div class="kv"><span>用户名</span><b>{{ entry ? entry.username : '—' }}</b></div>
       <div class="kv" v-if="entry">
         <span>加密方式</span>
         <b>

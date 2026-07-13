@@ -24,7 +24,7 @@ onMounted(async () => {
       <h2>修改记录</h2>
       <table class="hist-table">
         <thead>
-          <tr><th>时间</th><th>动作</th><th>账号</th><th>算法</th><th>操作人</th><th>说明</th></tr>
+          <tr><th>时间</th><th>动作</th><th>用户名</th><th>算法</th><th>操作人</th><th>说明</th></tr>
         </thead>
         <tbody>
           <tr v-for="r in rows" :key="r.id">

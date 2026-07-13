@@ -32,12 +32,13 @@ VALID_ALGOS = ("symmetric", "gpg", "sm2")
 
 
 class CreateRequest(BaseModel):
-    title: Optional[str] = None  # 已取消必填；保留字段仅用于审计/兼容历史
-    username: str = ""
+    title: str = ""  # 密码文件名称
+    username: str = ""  # 用户名 / 账号
     secret: str
     notes: str = ""
     comment: str = ""
     group_id: int  # 必填：数据绑定的分组
+    system: str = ""  # 系统（如邮箱 / 服务器 / GitLab）
     algorithm: str = "symmetric"  # 'symmetric' = 条目密码对称加密；'gpg' / 'sm2' = legacy
     entry_password: str = ""  # algorithm='symmetric' 时必填；其余算法不需要
     orgkey_id: Optional[int] = None  # legacy 方案时使用：选一把本组织 OrgKey 的公钥加密
@@ -49,6 +50,7 @@ class UpdateRequest(BaseModel):
     algorithm: Optional[str] = None  # 目标算法：'symmetric' | 'gpg' | 'sm2'（省略则保持原方案）
     secret: Optional[str] = None
     notes: Optional[str] = None
+    system: Optional[str] = None  # 系统
     comment: str = ""
     entry_password: Optional[str] = None  # 当前条目密码（scheme=entry 或目标改 symmetric 时必填）
     new_entry_password: Optional[str] = None  # 仅当目标为 symmetric 时使用（不填则沿用当前/服务端密钥加密）
@@ -77,6 +79,7 @@ def _serialize_meta(db: Session, e: PasswordEntry) -> dict:
     return {
         "id": e.id,
         "title": e.title or "",
+        "system": e.system or "",
         "username": e.username,
         "algorithm": e.algorithm,
         "scheme": e.scheme,
@@ -230,17 +233,24 @@ def list_passwords(
     page: int = None,
     page_size: int = None,
     q: Optional[str] = None,
+    group_id: Optional[int] = None,
+    system: Optional[str] = None,
     db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
     """密码列表。
 
     - 不传 page_size：返回完整扁平数组（兼容旧调用 / 其它内部页面）。
     - 传 page_size：返回分页信封 {"items", "total", "page", "page_size"}（密码页走此路径）。
-    - q：按「账号 / 标题 / 备注」模糊搜索（后台执行）。
+    - q：按「账号 / 密码文件名称 / 系统 / 备注」模糊搜索（后台执行）。
+    - group_id / system：可选筛选（分组下拉 + 系统输入框）。
     """
     gids = get_user_group_ids(db, user)
     f = visibility_filter(PasswordEntry.group_id, user, gids)
     qry = db.query(PasswordEntry).filter_by(deleted=False)
+    if group_id is not None:
+        qry = qry.filter(PasswordEntry.group_id == group_id)
+    if system:
+        qry = qry.filter(PasswordEntry.system.ilike(f"%{system.strip()}%"))
     if f is not None:
         qry = qry.filter(f)
     rows = qry.order_by(PasswordEntry.updated_at.desc()).all()
@@ -251,6 +261,7 @@ def list_passwords(
             if ql in (r.username or "").lower()
             or ql in (r.title or "").lower()
             or ql in (r.notes or "").lower()
+            or ql in (r.system or "").lower()
         ]
     total = len(rows)
     # 未指定分页 → 兼容旧调用：返回完整扁平数组
@@ -300,6 +311,7 @@ def create(
         title=(req.title or "").strip(),
         username=req.username,
         notes=req.notes,
+        system=(req.system or "").strip(),
         group_id=req.group_id,
         created_by=user.username,
         updated_by=user.username,
@@ -315,6 +327,7 @@ def create(
             action="create",
             title=entry.title,
             username=entry.username,
+            system=entry.system,
             algorithm=entry.algorithm,
             ciphertext=entry.ciphertext,
             notes=entry.notes,
@@ -332,7 +345,7 @@ def create(
 # 每一行只需提供 用户名 / 密码明文（真实密码）/ 备注 / 所属分组。
 # 与用户批量导入一致：逐行解析、逐行创建，某行失败不影响其它行，并以逐行报告回执。
 
-PWD_IMPORT_HEADERS = ["账号", "密码明文", "备注"]
+PWD_IMPORT_HEADERS = ["密码文件名称", "系统", "用户名", "密码明文", "备注"]
 
 
 def _xlsx_bytes_passwords() -> bytes:
@@ -352,8 +365,8 @@ def _xlsx_bytes_passwords() -> bytes:
     ws.cell(row=1, column=1, value="使用说明").font = Font(bold=True, color="FF2563EB")
     instructions = [
         "本表用于批量导入密码。第 1 行为说明，导入时会自动忽略。",
-        "表头为：账号 / 密码明文 / 备注，其下方即为数据行。",
-        "「账号」为登录用户名 / 邮箱；「密码明文」即你要保存的真实密码 / 密钥本身；「备注」为可选说明。",
+        "表头为：密码文件名称 / 系统 / 用户名 / 密码明文 / 备注，其下方即为数据行。",
+        "「密码文件名称」为该条密码的命名（如「邮箱登录密码」）；「系统」为所属系统（如「邮箱系统 / 生产服务器」，可留空）；「用户名」为登录账号 / 邮箱；「密码明文」即你要保存的真实密码 / 密钥本身；「备注」为可选说明。",
         "「密码明文」与导入页面填写的「加密密码（解密密码）」是两回事 —— 加密密码仅用于解锁本批导入的条目。",
         "「所属分组」请在导入页面的下拉框中选择（对所有行生效），无需在模板里填写。",
         "加密方式 / 加密密码 / 密钥在导入页面上统一选择，对所有行生效。",
@@ -372,8 +385,8 @@ def _xlsx_bytes_passwords() -> bytes:
         c.alignment = center
 
     examples = [
-        ["alice@example.com", "Alice@2026", "示例账号"],
-        ["bob", "BobSecret!9", "示例账号2"],
+        ["邮箱登录密码", "邮箱系统", "alice@example.com", "Alice@2026", "示例"],
+        ["服务器root", "生产服务器", "root", "Root@2026!", "示例"],
     ]
     for r, row in enumerate(examples, start=body_start + 1):
         for c_idx, val in enumerate(row, start=1):
@@ -412,15 +425,31 @@ def download_password_template(
 # ────────────────────── 上传解析 ──────────────────────
 
 def _norm_pwd_row(row: dict) -> tuple:
-    """把一行数据归一化成 (username, secret, notes)。所属分组由页面统一选择，不在模板内。"""
+    """把一行数据归一化成 (title, system, username, secret, notes)。所属分组由页面统一选择，不在模板内。"""
+    title = (row.get("title") or "").strip()
+    system = (row.get("system") or "").strip()
     username = (row.get("username") or "").strip()
     secret = (row.get("secret") or "").strip()  # 密码明文（真实密码）
     notes = (row.get("notes") or "").strip()
-    return username, secret, notes
+    return title, system, username, secret, notes
+
+
+# 表头别名：兼容新模板（密码文件名称/系统/用户名）与旧导出文件（标题/账号）
+PWD_HEADER_ALIASES = {
+    "title": ["密码文件名称", "标题"],
+    "system": ["系统"],
+    "username": ["用户名", "账号"],
+    "secret": ["密码明文"],
+    "notes": ["备注"],
+}
 
 
 def _read_xlsx_passwords(content: bytes) -> List[dict]:
-    """从 xlsx bytes 提取数据行；返回 dict 列表（key 是中文表头映射字段）。"""
+    """从 xlsx bytes 提取数据行；返回 dict 列表（key 是逻辑字段名）。
+
+    支持新表头（密码文件名称 / 系统 / 用户名 / 密码明文 / 备注）与旧表头别名
+    （标题 / 账号），以便历史导出的文件也能重新导入。
+    """
     from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
@@ -439,7 +468,12 @@ def _read_xlsx_passwords(content: bytes) -> List[dict]:
             raw_headers = [str(x).strip() for x in row]
             if "密码明文" not in raw_headers:
                 continue
-            headers = {"username": "账号", "secret": "密码明文", "notes": "备注"}
+            headers = {}
+            for key, aliases in PWD_HEADER_ALIASES.items():
+                for alias in aliases:
+                    if alias in raw_headers:
+                        headers[key] = alias
+                        break
             continue
         full = list(r)
         cells = {}
@@ -528,7 +562,7 @@ async def import_passwords(
     created = skipped = errored = 0
 
     for idx, raw_row in enumerate(data_rows, start=1):
-        username, secret, notes = _norm_pwd_row(raw_row)
+        title, system, username, secret, notes = _norm_pwd_row(raw_row)
         if not username and not secret:
             results.append(PasswordImportRow(row=idx, username="", status="skipped", message="空行已跳过"))
             skipped += 1
@@ -555,6 +589,8 @@ async def import_passwords(
             continue
 
         req = CreateRequest(
+            title=title or username,
+            system=system,
             username=username,
             secret=secret,
             notes=notes,
@@ -571,7 +607,8 @@ async def import_passwords(
             continue
 
         entry = PasswordEntry(
-            title=username,
+            title=title or username,
+            system=system,
             username=username,
             notes=notes,
             group_id=group_id,
@@ -666,13 +703,16 @@ def update(
     changes: list[str] = []
     if req.title is not None and req.title != entry.title:
         entry.title = req.title
-        changes.append("标题")
+        changes.append("title")
     if req.username is not None and req.username != entry.username:
         entry.username = req.username
-        changes.append("账号")
+        changes.append("username")
     if req.notes is not None and req.notes != entry.notes:
         entry.notes = req.notes
         changes.append("备注")
+    if req.system is not None and req.system != entry.system:
+        entry.system = req.system
+        changes.append("system")
     if req.orgkey_id is not None and req.orgkey_id != entry.orgkey_id:
         changes.append("加密密钥")
 
@@ -787,6 +827,7 @@ def update(
             action="update",
             title=entry.title,
             username=entry.username,
+            system=entry.system,
             algorithm=entry.algorithm,
             ciphertext=entry.ciphertext,
             notes=entry.notes,
@@ -819,6 +860,7 @@ def delete(
             action="delete",
             title=entry.title,
             username=entry.username,
+            system=entry.system,
             algorithm=entry.algorithm,
             ciphertext=entry.ciphertext,
             notes=entry.notes,
@@ -850,6 +892,8 @@ def _build_export_rows(db: Session, entries: list, plaintext: bool, passwords: d
         has_entry = bool(e.entry_salt) and bool(e.entry_iv)
         row = {
             "id": e.id,
+            "title": e.title or "",
+            "system": e.system or "",
             "username": e.username,
             "algorithm": e.algorithm,
             "scheme": e.scheme,
@@ -914,9 +958,9 @@ def _xlsx_bytes_export(rows: list, plaintext: bool, skipped: int) -> bytes:
     center = Alignment(horizontal="center", vertical="center")
 
     if plaintext:
-        headers = ["账号", "加密方式", "所属分组", "密钥", "密码明文", "备注", "更新时间"]
+        headers = ["密码文件名称", "系统", "用户名", "加密方式", "所属分组", "密钥", "密码明文", "备注", "更新时间"]
     else:
-        headers = ["账号", "加密方式", "所属分组", "密钥", "密文", "备注", "更新时间"]
+        headers = ["密码文件名称", "系统", "用户名", "加密方式", "所属分组", "密钥", "密文", "备注", "更新时间"]
     for col_idx, header in enumerate(headers, start=1):
         c = ws.cell(row=1, column=col_idx, value=header)
         c.font = bold
@@ -932,6 +976,8 @@ def _xlsx_bytes_export(rows: list, plaintext: bool, skipped: int) -> bytes:
             else:
                 secret = row.get("secret")
             vals = [
+                row.get("title", ""),
+                row.get("system", ""),
                 row.get("username", ""),
                 row.get("algorithm", ""),
                 row.get("group_name", ""),
@@ -942,6 +988,8 @@ def _xlsx_bytes_export(rows: list, plaintext: bool, skipped: int) -> bytes:
             ]
         else:
             vals = [
+                row.get("title", ""),
+                row.get("system", ""),
                 row.get("username", ""),
                 row.get("algorithm", ""),
                 row.get("group_name", ""),
@@ -974,9 +1022,9 @@ def _xlsx_bytes_export(rows: list, plaintext: bool, skipped: int) -> bytes:
 def export_passwords(
     req: ExportRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_admin),
+    user: User = Depends(get_current_user),
 ):
-    """批量导出所选密码，仅支持 Excel (.xlsx) 格式。
+    """批量导出所选密码（所有登录用户可用），仅支持 Excel (.xlsx) 格式。
 
     - plaintext=False：加密备份（含密文 + 元数据），无需密码，可用于迁移 / 恢复。
     - plaintext=True：明文导出，需通过 passwords 提供各条目的解密密码；解密失败者 secret 为 null。

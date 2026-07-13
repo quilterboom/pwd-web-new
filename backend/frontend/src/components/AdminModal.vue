@@ -297,12 +297,12 @@ watch(pageSize, () => {
           </div>
           <div class="spacer"></div>
           <div class="toolbar-group">
-            <input class="search-input" v-model="auditSearch" type="text" placeholder="搜索账号 / 标题 / 分组 / 操作人…" />
+            <input class="search-input" v-model="auditSearch" type="text" placeholder="搜索用户名 / 密码文件名称 / 分组 / 操作人…" />
           </div>
         </div>
         <table class="pw-table hist-table">
           <thead>
-            <tr><th>时间</th><th>动作</th><th>账号</th><th>分组</th><th>操作人</th><th>说明</th></tr>
+            <tr><th>时间</th><th>动作</th><th>用户名</th><th>分组</th><th>操作人</th><th>说明</th></tr>
           </thead>
           <tbody>
             <tr v-for="r in audit" :key="r.id">
@@ -326,7 +326,7 @@ watch(pageSize, () => {
           <span class="pager-info">第 {{ auditPage }} / {{ auditPages }} 页 · 共 {{ auditTotal }} 条</span>
           <button class="btn ghost small" :disabled="auditPage >= auditPages" @click="gotoAudit(1)">下一页 ›</button>
         </div>
-        <p class="audit-tip">说明：删除密码会在此生成一条「删除」记录，含操作人与账号，便于管理员审计。</p>
+        <p class="audit-tip">说明：删除密码会在此生成一条「删除」记录，含操作人与用户名，便于管理员审计。</p>
       </section>
 
       <div class="modal-actions">
