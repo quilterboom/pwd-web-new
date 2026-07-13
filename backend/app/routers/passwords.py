@@ -839,6 +839,55 @@ def update(
     return {"id": pid, "message": "updated", "changes": changes}
 
 
+class BatchDeleteRequest(BaseModel):
+    ids: List[int]
+
+
+@router.post("/batch-delete")
+def batch_delete(
+    req: BatchDeleteRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """批量软删除密码（与单条删除一致：写审计日志、校验分组权限）。
+
+    返回 deleted / skipped / requested，便于前端提示哪些被跳过（如已删除或无权限）。
+    """
+    deleted = 0
+    skipped = 0
+    for pid in req.ids:
+        entry = db.query(PasswordEntry).filter_by(id=pid, deleted=False).first()
+        if entry is None:
+            skipped += 1
+            continue
+        try:
+            ensure_group_access(db, user, entry.group_id)
+        except HTTPException:
+            skipped += 1
+            continue
+        entry.deleted = True
+        entry.updated_by = user.username
+        entry.updated_at = datetime.now(timezone.utc)
+        db.add(
+            History(
+                password_id=pid,
+                group_id=entry.group_id,
+                action="delete",
+                title=entry.title,
+                username=entry.username,
+                system=entry.system,
+                algorithm=entry.algorithm,
+                ciphertext=entry.ciphertext,
+                notes=entry.notes,
+                changed_by=user.username,
+                comment=f"批量删除密码（账号：{entry.username or entry.title or '未命名'}）",
+            )
+        )
+        deleted += 1
+    db.commit()
+    return {"deleted": deleted, "skipped": skipped, "requested": len(req.ids)}
+
+
 @router.delete("/{pid}")
 def delete(
     pid: int,

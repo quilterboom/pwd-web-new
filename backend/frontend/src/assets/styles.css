@@ -78,7 +78,7 @@ label { font-size: 13px; color: var(--muted); margin-top: 10px; display: block; 
 .user { color: var(--muted); font-size: 14px; }
 
 /* 容器 */
-.container { max-width: 1000px; margin: 24px auto; padding: 0 24px; }
+.container { width: 100%; max-width: 100%; margin: 24px auto; padding: 0 24px; }
 .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
 .toolbar #search-input, .toolbar .search-input { flex: 1; min-width: 160px; max-width: 320px; }
 .keys-status { font-size: 12px; color: var(--muted); margin-bottom: 10px; }

@@ -8,6 +8,7 @@ import {
   clearSelection,
   loadEntries,
   requestDelete,
+  requestBatchDelete,
   showToast,
 } from '../store'
 import { api } from '../api/http'
@@ -129,6 +130,13 @@ function openExport() {
   }
   showExport.value = true
 }
+function openBatchDelete() {
+  if (!state.selectedIds.length) {
+    showToast('请先勾选要删除的密码')
+    return
+  }
+  requestBatchDelete('pw', [...state.selectedIds])
+}
 </script>
 
 <template>
@@ -146,6 +154,14 @@ function openExport() {
           @click="openExport"
         >
           📤 导出{{ state.selectedIds.length ? ' (' + state.selectedIds.length + ')' : '' }}
+        </button>
+        <button
+          class="btn danger ghost"
+          :disabled="!state.selectedIds.length"
+          title="批量删除所选密码（需二次确认）"
+          @click="openBatchDelete"
+        >
+          🗑 批量删除{{ state.selectedIds.length ? ' (' + state.selectedIds.length + ')' : '' }}
         </button>
         <button class="btn ghost" title="批量导入密码" @click="showImport = true">📥 导入</button>
       </div>

@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -298,6 +298,55 @@ def export_orgkey(
             )
         },
     )
+
+
+class BatchDeleteKeysRequest(BaseModel):
+    ids: List[int]
+
+
+@orgkeys_router.post("/batch-delete")
+def batch_delete_orgkeys(
+    req: BatchDeleteKeysRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_admin),
+):
+    """批量删除密钥（管理员权限；与单条删除一致写审计日志）。
+
+    返回 deleted / skipped / requested。无权限或不存在的 id 计入 skipped 并跳过，不中断其余删除。
+    """
+    deleted = 0
+    skipped = 0
+    for kid in req.ids:
+        rec = db.query(OrgKey).filter_by(id=kid).first()
+        if rec is None:
+            skipped += 1
+            continue
+        try:
+            ensure_group_access(db, user, rec.group_id)
+        except HTTPException:
+            skipped += 1
+            continue
+        name = rec.name
+        gid = rec.group_id
+        algo = rec.algorithm
+        db.delete(rec)
+        db.add(
+            History(
+                password_id=None,
+                group_id=gid,
+                action="delete",
+                title=name,
+                username=None,
+                algorithm=algo,
+                ciphertext=None,
+                notes=None,
+                changed_by=user.username,
+                comment=f"批量删除密钥（名称：{name}）",
+            )
+        )
+        deleted += 1
+    db.commit()
+    return {"deleted": deleted, "skipped": skipped, "requested": len(req.ids)}
 
 
 @orgkeys_router.delete("/{kid}")

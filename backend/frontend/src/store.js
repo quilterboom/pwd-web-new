@@ -15,6 +15,7 @@ export const state = reactive({
   entries: [], // 密码列表
   keys: [], // 组织密钥库
   selectedIds: [], // 批量导出已勾选的密码 id
+  selectedKeyIds: [], // 密钥库批量操作已勾选的密钥 id（与密码勾选隔离，避免跨页串号）
   currentTab: 'pw', // 'pw' | 'key'
   keysStatus: '', // 服务端密钥就绪状态文本
   wait: { show: false, text: '正在处理…' },
@@ -70,6 +71,7 @@ export function doLogout() {
   state.entries = []
   state.keys = []
   state.selectedIds = []
+  state.selectedKeyIds = []
   setToken('')
   setUser('')
 }
@@ -147,9 +149,29 @@ export function clearSelection() {
   state.selectedIds = []
 }
 
+/* ---------- 密钥库批量勾选（与密码勾选隔离） ---------- */
+export function isKeySelected(id) {
+  return state.selectedKeyIds.includes(id)
+}
+export function toggleKeySelect(id) {
+  const i = state.selectedKeyIds.indexOf(id)
+  if (i >= 0) state.selectedKeyIds.splice(i, 1)
+  else state.selectedKeyIds.push(id)
+}
+export function setKeySelection(ids) {
+  state.selectedKeyIds = ids
+}
+export function clearKeySelection() {
+  state.selectedKeyIds = []
+}
+
 /* ---------- 删除两步确认 ---------- */
 export function requestDelete(type, id, name) {
   state.deleteTarget = { type, id, name }
+}
+// 批量删除：ids 为待删 id 数组；确认弹窗据此显示「N 个」并要求键入验证码
+export function requestBatchDelete(type, ids, name) {
+  state.deleteTarget = { type, ids, count: ids.length, name: name || `${ids.length} 项` }
 }
 export function closeDelete() {
   state.deleteTarget = null
@@ -159,6 +181,28 @@ export async function confirmDelete() {
   if (!t) return
   state.deleteTarget = null
   try {
+    // 批量删除分支
+    if (t.ids && t.ids.length) {
+      const body = JSON.stringify({ ids: t.ids })
+      if (t.type === 'key') {
+        const r = await api('/api/orgkeys/batch-delete', { method: 'POST', body })
+        clearKeySelection()
+        showToast(
+          `已批量删除 ${r.deleted} 个密钥（已记入审计日志）` +
+            (r.skipped ? `，${r.skipped} 个跳过` : '')
+        )
+        await loadOrgKeys()
+      } else {
+        const r = await api('/api/passwords/batch-delete', { method: 'POST', body })
+        clearSelection()
+        showToast(
+          `已批量删除 ${r.deleted} 个密码（已记入审计日志）` +
+            (r.skipped ? `，${r.skipped} 个跳过` : '')
+        )
+        await loadEntries()
+      }
+      return
+    }
     if (t.type === 'key') {
       await api('/api/orgkeys/' + t.id, { method: 'DELETE' })
       showToast('已删除密钥（已记入审计日志）')

@@ -40,7 +40,7 @@ function cancel() {
       <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="cancel">✕</button>
       <h2>确认删除</h2>
       <div class="del-warn">
-        <p>你即将删除<span>{{ target.type === 'key' ? '密钥' : '账号' }}</span> <strong>{{ target.name }}</strong>。</p>
+        <p>你即将删除<span>{{ target.type === 'key' ? '密钥' : '账号' }}</span> <strong v-if="target.ids">{{ target.count }} 个</strong><strong v-else>{{ target.name }}</strong>。</p>
         <p class="muted">删除后将生成一条删除记录供管理员在「审计日志」中查看。此操作不可撤销。</p>
       </div>
       <div class="modal-actions">
@@ -55,7 +55,7 @@ function cancel() {
     <div class="modal-card modal-card-narrow">
       <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="cancel">✕</button>
       <h2>输入验证码以删除</h2>
-      <p>正在删除{{ target.type === 'key' ? '密钥' : '账号' }}：<strong>{{ target.name }}</strong></p>
+      <p>正在删除{{ target.type === 'key' ? '密钥' : '账号' }}：<strong v-if="target.ids">{{ target.count }} 个</strong><strong v-else>{{ target.name }}</strong></p>
       <p class="muted">请在下方输入框中键入 <code class="del-code">确认删除</code> 四个字，以完成删除。</p>
       <input
         v-model="typed"

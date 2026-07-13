@@ -4,10 +4,15 @@ import {
   state,
   loadOrgKeys,
   requestDelete,
+  requestBatchDelete,
   showToast,
   apiBlob,
   triggerDownload,
   filenameFromDisposition,
+  isKeySelected,
+  toggleKeySelect,
+  setKeySelection,
+  clearKeySelection,
 } from '../store'
 import { api } from '../api/http'
 import { algoBadge, groupName, fmtTime } from '../utils'
@@ -82,6 +87,22 @@ function onDelete(id) {
   requestDelete('key', id, k ? k.name : '#' + id)
 }
 
+// ── 批量删除：勾选 + 全选 + 二次确认 ──
+const allKeysSelected = computed(
+  () => keys.value.length > 0 && keys.value.every((k) => isKeySelected(k.id))
+)
+function toggleAllKeys(ev) {
+  if (ev.target.checked) setKeySelection(keys.value.map((k) => k.id))
+  else clearKeySelection()
+}
+function openBatchDelete() {
+  if (!state.selectedKeyIds.length) {
+    showToast('请先勾选要删除的密钥')
+    return
+  }
+  requestBatchDelete('key', [...state.selectedKeyIds])
+}
+
 function onKeysSaved() {
   loadOrgKeys()
   fetchKeys()
@@ -99,6 +120,19 @@ function onKeysSaved() {
     </div>
 
     <div class="toolbar key-toolbar">
+      <div class="toolbar-group" v-if="state.isAdmin">
+        <label class="checkbox-inline">
+          <input type="checkbox" :checked="allKeysSelected" @change="toggleAllKeys" /> 全选
+        </label>
+        <button
+          class="btn danger ghost"
+          :disabled="!state.selectedKeyIds.length"
+          title="批量删除所选密钥（需二次确认）"
+          @click="openBatchDelete"
+        >
+          🗑 批量删除{{ state.selectedKeyIds.length ? ' (' + state.selectedKeyIds.length + ')' : '' }}
+        </button>
+      </div>
       <div class="toolbar-group">
         <label class="inline-label" for="key-group-filter">所属分组</label>
         <select id="key-group-filter" v-model="groupFilter">
@@ -118,11 +152,15 @@ function onKeysSaved() {
     <table class="pw-table">
       <thead>
         <tr>
+          <th v-if="state.isAdmin"></th>
           <th>名称</th><th>算法</th><th>分组</th><th>指纹</th><th>私钥</th><th>创建时间</th><th>创建人</th><th v-if="state.isAdmin">操作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="k in keys" :key="k.id">
+          <td v-if="state.isAdmin" class="col-select">
+            <input type="checkbox" :checked="isKeySelected(k.id)" @change="toggleKeySelect(k.id)" />
+          </td>
           <td>{{ k.name }}</td>
           <td><span class="badge" :class="algoBadge(k.algorithm).cls">{{ algoBadge(k.algorithm).label }}</span></td>
           <td>{{ groupName(state.groups, k.group_id) }}</td>
@@ -139,10 +177,10 @@ function onKeysSaved() {
           </td>
         </tr>
         <tr v-if="!keys.length && state.keys.length && groupFilter !== '0'">
-          <td :colspan="state.isAdmin ? 8 : 7" style="color:#6b7280">该分组暂无密钥条目</td>
+          <td :colspan="state.isAdmin ? 9 : 8" style="color:#6b7280">该分组暂无密钥条目</td>
         </tr>
         <tr v-else-if="!keys.length && state.keys.length">
-          <td :colspan="state.isAdmin ? 8 : 7" style="color:#6b7280">无匹配结果</td>
+          <td :colspan="state.isAdmin ? 9 : 8" style="color:#6b7280">无匹配结果</td>
         </tr>
       </tbody>
     </table>
