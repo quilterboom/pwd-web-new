@@ -53,7 +53,7 @@ COPY frontend/dist ./app/static
 # 数据卷：SQLite 数据库与 JWT 密钥均落在 /app/data，挂载到宿主机以便持久化
 VOLUME ["/app/data"]
 
-EXPOSE 9010
+EXPOSE 9010 9080
 
 # run.py 内部已通过 lifespan 完成建表 / 管理员 / 密钥初始化
 CMD ["python", "run.py"]

@@ -11,6 +11,17 @@
 # 首次启动请用环境变量覆盖管理员密码（ADMIN_PASSWORD）。
 # 平台：目标服务器为 Linux x86_64，因此强制 platform: linux/amd64；
 # 若你的构建/运行主机是 Apple Silicon (arm64)，Docker 会通过 QEMU 模拟运行 amd64 容器。
+#
+# ── HTTPS（可选，离线内网推荐）─────────────────────────────────────────────
+# 1) 在部署服务器生成自签名证书：
+#      bash backend/offline/gen_cert.sh <服务器IP> <域名>
+#    （产物落在 backend/ssl/，SAN 同时含 IP 与域名）
+# 2) 在项目根目录的 .env 里设置：
+#      SSL_CERTFILE=/app/ssl/server.crt
+#      SSL_KEYFILE=/app/ssl/server.key
+#    可选：SSL_REDIRECT（默认1，明文HTTP自动跳HTTPS）、HTTP_PORT（默认9080）、HSTS（默认0）
+# 3) docker compose up -d
+# 不设置 SSL_CERTFILE/SSL_KEYFILE 时维持明文 HTTP（向后兼容，行为与之前一致）。
 services:
   password-manager:
     image: password-manager:latest
@@ -23,7 +34,10 @@ services:
         - linux/amd64
     restart: unless-stopped
     ports:
+      # HTTPS（TLS）端口，默认 9010
       - "${PORT:-9010}:9010"
+      # 明文 HTTP 端口：启用 SSL 时用作 307 重定向到 HTTPS（默认 9080）
+      - "${HTTP_PORT:-9080}:9080"
     environment:
       # 生产务必修改管理员初始密码
       PORT: ${PORT:-9010}
@@ -31,6 +45,14 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       TOKEN_EXPIRE_MINUTES: ${TOKEN_EXPIRE_MINUTES:-1440}
       SECRET_KEY: ${SECRET_KEY:-}
+      # ── HTTPS 相关（不设则维持明文 HTTP）──
+      SSL_CERTFILE: ${SSL_CERTFILE:-}
+      SSL_KEYFILE: ${SSL_KEYFILE:-}
+      SSL_REDIRECT: ${SSL_REDIRECT:-1}
+      HTTP_PORT: ${HTTP_PORT:-9080}
+      HSTS: ${HSTS:-0}
     volumes:
       # 数据库 + JWT 密钥 + 文件保险箱持久化到宿主机
       - ./backend/data:/app/data
+      # 自签名证书（gen_cert.sh 生成），只读挂载进容器
+      - ./backend/ssl:/app/ssl:ro

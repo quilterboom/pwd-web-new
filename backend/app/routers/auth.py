@@ -6,9 +6,12 @@ import os
 import secrets
 import time
 
+from ..config import ALLOW_REGISTRATION, REGISTER_DEFAULT_GROUP
 from ..core.deps import get_current_user, get_user_groups, is_global_admin
 from ..db import get_db
-from ..models import User
+from ..models import Group, User
+from ..seed import _seed_login_material
+from .admin import _link_user_group
 from ..security import (
     consume_login_challenge,
     create_token,
@@ -141,6 +144,74 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
         "is_global_admin": is_global_admin(db, user),
         "groups": groups,
     }
+
+
+# ────────── 自助注册（受 ALLOW_REGISTRATION 总开关控制）──────────
+#
+# 设计要点：
+#   • 默认关闭（ALLOW_REGISTRATION 不为真）→ 直接 403，避免误开后任意访客灌库。
+#   • 仅创建「普通用户」(is_admin=False)；权限/分组由管理员在后台调整。
+#   • 同时写入 SCRAM-SM3 凭据（pw_salt/pw_verifier）与 bcrypt 哈希（hashed_password），
+#     保证两种登录路径都可用（与首次 seed 建管理员同款写法）。
+#   • 自动加入 REGISTER_DEFAULT_GROUP（find-or-create），注册即可看到一个空保险箱。
+#   • 独立注册限速，与登录限速分开，遏制批量注册/撞库。
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    confirm_password: str = ""
+
+
+# 注册限速（独立于登录限速）：单 IP 在窗口内最多注册次数
+_REGISTER_LIMIT = int(os.getenv("REGISTER_RATE_LIMIT", "10"))
+_REGISTER_WINDOW = int(os.getenv("REGISTER_RATE_WINDOW", "3600"))  # 默认 1 小时
+_register_hits: dict[str, list[float]] = {}
+
+
+def _register_rate_limit(request: Request) -> None:
+    client = request.client.host if request.client else "unknown"
+    now = time.time()
+    hits = _register_hits.setdefault(client, [])
+    _register_hits[client] = [t for t in hits if now - t < _REGISTER_WINDOW]
+    if len(_register_hits[client]) >= _REGISTER_LIMIT:
+        raise HTTPException(status_code=429, detail="注册过于频繁，请稍后再试")
+    _register_hits[client].append(now)
+
+
+@router.post("/register")
+def register(req: RegisterRequest, request: Request, db: Session = Depends(get_db)):
+    """自助注册：创建普通用户并自动加入默认分组。受 ALLOW_REGISTRATION 总开关控制。"""
+    if not ALLOW_REGISTRATION:
+        raise HTTPException(status_code=403, detail="当前系统未开放注册")
+
+    _register_rate_limit(request)
+
+    username = (req.username or "").strip()
+    password = req.password or ""
+    if len(username) < 3:
+        raise HTTPException(status_code=400, detail="用户名至少 3 个字符")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="密码至少 8 位")
+    if req.confirm_password and req.confirm_password != password:
+        raise HTTPException(status_code=400, detail="两次输入的密码不一致")
+    if db.query(User).filter_by(username=username).first():
+        raise HTTPException(status_code=400, detail="该用户名已被注册")
+
+    # 创建普通用户（SCRAM 凭据 + bcrypt 哈希双写，两种登录路径都可用）
+    new_user = User(username=username, hashed_password=hash_password(password), is_admin=False)
+    _seed_login_material(new_user, password)
+    db.add(new_user)
+    db.flush()
+
+    # 自动加入默认分组（find-or-create，按 REGISTER_DEFAULT_GROUP）
+    group = db.query(Group).filter_by(name=REGISTER_DEFAULT_GROUP).first()
+    if group is None:
+        group = Group(name=REGISTER_DEFAULT_GROUP, description="系统默认分组")
+        db.add(group)
+        db.flush()
+    _link_user_group(db, new_user.id, group.id)
+    db.commit()
+    return {"ok": True, "message": "注册成功，请登录"}
 
 
 # ────────── 自助修改登录密码（所有登录用户可用）──────────

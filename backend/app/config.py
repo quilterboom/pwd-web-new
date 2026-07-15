@@ -35,5 +35,12 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 # 首次启动时自动创建的默认分组名称
 DEFAULT_GROUP_NAME = os.getenv("DEFAULT_GROUP_NAME", "默认分组")
 
+# 是否开放「自助注册」：默认关闭（"0"）。设为 1/true/yes/on 才允许任意访客注册为普通用户。
+# 注意：开启后任何能访问站点的人都能建账号，请仅在可信内网或配合管理员审核流程时使用。
+ALLOW_REGISTRATION = os.getenv("ALLOW_REGISTRATION", "0") in ("1", "true", "yes", "on")
+
+# 自助注册用户自动加入的默认分组（默认与首次启动创建的默认分组一致，可用 REGISTER_DEFAULT_GROUP 覆盖）
+REGISTER_DEFAULT_GROUP = os.getenv("REGISTER_DEFAULT_GROUP", DEFAULT_GROUP_NAME)
+
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "9010"))

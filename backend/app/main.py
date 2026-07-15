@@ -45,6 +45,12 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault(
         "Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=()"
     )
+    # HSTS：仅在启用 TLS 且显式开启 HSTS 时下发，避免明文部署被浏览器强制锁死 HTTPS
+    # （自签名证书轮换期间若被 HSTS 缓存锁死会很麻烦，故默认关闭，按需开启）。
+    if os.getenv("SSL_CERTFILE") and os.getenv("HSTS", "0") == "1":
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
     # 严格 CSP：仅允许同源脚本/样式/图片/连接；frame-ancestors 'none' 防嵌套；
     # 因模板中存在内联 style 属性，style-src 保留 'unsafe-inline'（脚本一律外链，无需内联）。
     csp = (

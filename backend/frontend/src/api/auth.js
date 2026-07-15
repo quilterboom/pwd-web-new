@@ -31,6 +31,14 @@ export async function me() {
   return api('/api/auth/me')
 }
 
+// 自助注册：用户名 + 密码。受后端 ALLOW_REGISTRATION 开关控制（未开放返回 403）。
+export async function register(username, password) {
+  return api('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  })
+}
+
 // 自助改密：SCRAM-SM3 优先，legacy 账号用 current_password 明文兜底。
 export async function changePassword(current, next) {
   const begin = await api('/api/auth/change-password/begin', { method: 'POST', body: '{}' })
