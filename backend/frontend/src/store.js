@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import { api, getToken, setToken, setUser, getUser } from './api/http'
+import { api, getToken, setToken, setUser, getUser, setUnauthorizedHandler } from './api/http'
 import { login as apiLogin, me as apiMe, logout as apiLogout } from './api/auth'
 
 // 便于组件从 store 统一引用这些 HTTP 辅助函数
@@ -67,6 +67,12 @@ export async function doLogin(username, password) {
 export function doLogout() {
   // 先通知服务端吊销当前令牌（best-effort，失败不影响本地登出），实现服务端强制失效
   if (state.token) apiLogout()
+  clearLocalAuth()
+}
+
+// 仅清本地登录态（不通知服务端）。用于「登录已过期/令牌失效」：此时服务端会话本就无效，
+// 不必再调 apiLogout（否则可能再次 401 触发本处理器，造成无意义递归）。
+function clearLocalAuth() {
   state.token = ''
   state.user = ''
   state.isAdmin = false
@@ -76,9 +82,16 @@ export function doLogout() {
   state.keys = []
   state.selectedIds = []
   state.selectedKeyIds = []
+  state.permissions = null
   setToken('')
   setUser('')
 }
+
+// 登录超时 / 令牌失效：任意请求 401 时由 http.js 调用，自动跳回登录页（App.vue 依 state.token 切换）。
+setUnauthorizedHandler(() => {
+  clearLocalAuth()
+  showToast('登录已过期，请重新登录', true)
+})
 
 /* ---------- 空闲超时自动退出 ----------
  * 登录态下若连续 IDLE_TIMEOUT_MS（默认 1 分钟）无任何用户操作，自动取消登录状态。

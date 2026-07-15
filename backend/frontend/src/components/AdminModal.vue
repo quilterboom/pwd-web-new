@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { state, api, refreshMe, showToast } from '../store'
+import { state, api, refreshMe, showToast, can } from '../store'
 import { fmtTime, HISTORY_ACTION_LABELS, humanizeComment, algoBadge, groupName } from '../utils'
 import UserFormModal from './UserFormModal.vue'
 import GroupFormModal from './GroupFormModal.vue'
@@ -102,6 +102,11 @@ onMounted(async () => {
   } catch (e) {
     showToast('加载管理数据失败：' + e.message)
   }
+  // 默认显示第一个当前用户有权限查看的子标签（避免子标签因权限被隐藏时默认空白）
+  const permKey = { users: 'sys.user_manage', groups: 'sys.group_manage', audit: 'sys.audit_view', perm: null }
+  const order = ['users', 'groups', 'audit', 'perm']
+  const visible = order.filter((s) => (s === 'perm' ? state.isGlobalAdmin : can(permKey[s])))
+  if (!visible.includes(subtab.value)) subtab.value = visible[0] || 'users'
 })
 
 async function afterUserSaved() {
@@ -188,18 +193,18 @@ watch(pageSize, () => {
       <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
       <h2>系统管理</h2>
       <nav class="subtabs">
-        <button class="subtab" :class="{ active: subtab === 'users' }" @click="switchSub('users')">用户</button>
-        <button class="subtab" :class="{ active: subtab === 'groups' }" @click="switchSub('groups')">分组</button>
-        <button class="subtab" :class="{ active: subtab === 'audit' }" @click="switchSub('audit')">审计日志</button>
+        <button v-if="can('sys.user_manage')" class="subtab" :class="{ active: subtab === 'users' }" @click="switchSub('users')">用户</button>
+        <button v-if="can('sys.group_manage')" class="subtab" :class="{ active: subtab === 'groups' }" @click="switchSub('groups')">分组</button>
+        <button v-if="can('sys.audit_view')" class="subtab" :class="{ active: subtab === 'audit' }" @click="switchSub('audit')">审计日志</button>
         <button v-if="state.isGlobalAdmin" class="subtab" :class="{ active: subtab === 'perm' }" @click="switchSub('perm')">授权管理</button>
       </nav>
 
       <!-- 用户 -->
-      <section v-show="subtab === 'users'">
+      <section v-show="subtab === 'users' && can('sys.user_manage')">
         <div class="toolbar key-toolbar">
           <div class="toolbar-group toolbar-actions">
-            <button class="btn ghost" @click="showUserBatch = true">📥 批量新增</button>
-            <button class="btn primary" @click="(editingUser = null, showUserForm = true)">＋ 新增用户</button>
+            <button v-if="can('sys.user_manage')" class="btn ghost" @click="showUserBatch = true">📥 批量新增</button>
+            <button v-if="can('sys.user_manage')" class="btn primary" @click="(editingUser = null, showUserForm = true)">＋ 新增用户</button>
           </div>
           <div class="spacer"></div>
           <div class="toolbar-group">
@@ -226,8 +231,8 @@ watch(pageSize, () => {
               <td>{{ u.groups.map((g) => g.name).join('、') || '—' }}</td>
               <td>
                 <div class="ops">
-                  <button class="btn ghost small" @click="(editingUser = u, showUserForm = true)">编辑</button>
-                  <button class="btn danger small" @click="deleteUser(u.id)">删除</button>
+                  <button v-if="can('sys.user_manage')" class="btn ghost small" @click="(editingUser = u, showUserForm = true)">编辑</button>
+                  <button v-if="can('sys.user_manage')" class="btn danger small" @click="deleteUser(u.id)">删除</button>
                 </div>
               </td>
             </tr>
@@ -247,13 +252,13 @@ watch(pageSize, () => {
       </section>
 
       <!-- 分组 -->
-      <section v-show="subtab === 'groups'">
+      <section v-show="subtab === 'groups' && can('sys.group_manage')">
         <div class="toolbar">
           <div class="spacer"></div>
           <div class="toolbar-group">
             <input class="search-input" v-model="groupSearch" type="text" placeholder="搜索分组名…" />
           </div>
-          <button class="btn primary" @click="(editingGroup = null, showGroupForm = true)">＋ 新增分组</button>
+          <button v-if="can('sys.group_manage')" class="btn primary" @click="(editingGroup = null, showGroupForm = true)">＋ 新增分组</button>
         </div>
         <table class="pw-table">
           <thead>
@@ -266,8 +271,8 @@ watch(pageSize, () => {
               <td>{{ g.members.map((m) => m.username).join('、') || '—' }}</td>
               <td>
                 <div class="ops">
-                  <button class="btn ghost small" @click="(editingGroup = g, showGroupForm = true)">编辑</button>
-                  <button class="btn danger small" @click="deleteGroup(g.id)">删除</button>
+                  <button v-if="can('sys.group_manage')" class="btn ghost small" @click="(editingGroup = g, showGroupForm = true)">编辑</button>
+                  <button v-if="can('sys.group_manage')" class="btn danger small" @click="deleteGroup(g.id)">删除</button>
                 </div>
               </td>
             </tr>
@@ -287,7 +292,7 @@ watch(pageSize, () => {
       </section>
 
       <!-- 审计 -->
-      <section v-show="subtab === 'audit'">
+      <section v-show="subtab === 'audit' && can('sys.audit_view')">
         <div class="toolbar">
           <div class="toolbar-group">
             <div class="seg-group" id="audit-filter" role="group" aria-label="审计类型筛选">

@@ -13,6 +13,7 @@ import {
   toggleKeySelect,
   setKeySelection,
   clearKeySelection,
+  can,
 } from '../store'
 import { api } from '../api/http'
 import { algoBadge, groupName, fmtTime } from '../utils'
@@ -30,6 +31,12 @@ const keysTotal = ref(0)
 const page = ref(1)
 const pageSize = ref(10)
 const pages = computed(() => Math.max(1, Math.ceil(keysTotal.value / pageSize.value)))
+
+// 是否显示密钥操作区（勾选列 + 操作列）：需管理员身份且拥有删除或批量删除权限。
+// 超管恒为 true（权限恒放行）；分组管理员按其被授权的 key 权限显示对应按钮。
+const showKeyOps = computed(
+  () => state.isAdmin && (can('key.delete') || can('key.batch_delete'))
+)
 
 async function fetchKeys() {
   try {
@@ -125,6 +132,7 @@ function onKeysSaved() {
           <input type="checkbox" :checked="allKeysSelected" @change="toggleAllKeys" /> 全选
         </label>
         <button
+          v-if="can('key.batch_delete')"
           class="btn danger ghost"
           :disabled="!state.selectedKeyIds.length"
           title="批量删除所选密钥（需二次确认）"
@@ -143,22 +151,22 @@ function onKeysSaved() {
       <div class="toolbar-group flex-grow">
         <input v-model="search" type="text" placeholder="搜索密钥名 / 创建人…" />
       </div>
-      <div class="toolbar-group toolbar-actions">
-        <button class="btn ghost" title="导入外部密钥（PEM / armored）" @click="showImport = true">📥 导入</button>
-        <button class="btn primary" title="生成新的 GPG / SM2 密钥对" @click="showGen = true">🛠 生成</button>
+      <div class="toolbar-group toolbar-actions" v-if="state.isAdmin">
+        <button v-if="can('key.import')" class="btn ghost" title="导入外部密钥（PEM / armored）" @click="showImport = true">📥 导入</button>
+        <button v-if="can('key.generate')" class="btn primary" title="生成新的 GPG / SM2 密钥对" @click="showGen = true">🛠 生成</button>
       </div>
     </div>
 
     <table class="pw-table">
       <thead>
         <tr>
-          <th v-if="state.isAdmin"></th>
-          <th>名称</th><th>算法</th><th>分组</th><th>指纹</th><th>私钥</th><th>创建时间</th><th>创建人</th><th v-if="state.isAdmin">操作</th>
+          <th v-if="showKeyOps"></th>
+          <th>名称</th><th>算法</th><th>分组</th><th>指纹</th><th>私钥</th><th>创建时间</th><th>创建人</th><th v-if="showKeyOps">操作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="k in keys" :key="k.id">
-          <td v-if="state.isAdmin" class="col-select">
+          <td v-if="showKeyOps" class="col-select">
             <input type="checkbox" :checked="isKeySelected(k.id)" @change="toggleKeySelect(k.id)" />
           </td>
           <td>{{ k.name }}</td>
@@ -168,19 +176,19 @@ function onKeysSaved() {
           <td>{{ k.has_private ? '✓ 有' : '— 无' }}</td>
           <td>{{ fmtTime(k.created_at) }}</td>
           <td>{{ k.created_by || '' }}</td>
-          <td v-if="state.isAdmin">
+          <td v-if="showKeyOps">
             <div class="ops">
               <button class="btn ghost small" @click="exportKey(k.id, 'public')">导出公钥</button>
               <button v-if="k.has_private" class="btn ghost small" @click="exportKey(k.id, 'private')">导出私钥</button>
-              <button class="btn danger small" @click="onDelete(k.id)">删除</button>
+              <button v-if="can('key.delete')" class="btn danger small" @click="onDelete(k.id)">删除</button>
             </div>
           </td>
         </tr>
         <tr v-if="!keys.length && state.keys.length && groupFilter !== '0'">
-          <td :colspan="state.isAdmin ? 9 : 8" style="color:#6b7280">该分组暂无密钥条目</td>
+          <td :colspan="showKeyOps ? 9 : 8" style="color:#6b7280">该分组暂无密钥条目</td>
         </tr>
         <tr v-else-if="!keys.length && state.keys.length">
-          <td :colspan="state.isAdmin ? 9 : 8" style="color:#6b7280">无匹配结果</td>
+          <td :colspan="showKeyOps ? 9 : 8" style="color:#6b7280">无匹配结果</td>
         </tr>
       </tbody>
     </table>

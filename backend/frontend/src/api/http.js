@@ -5,6 +5,16 @@ const USER_KEY = 'password_manager_user'
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY) || ''
 }
+
+// 401 统一处理器：任意请求返回 401（登录超时/令牌失效）时由 store 注册此回调，
+// 负责清除本地登录态并跳回登录页，避免用户手动刷新。
+let unauthorizedHandler = null
+export function setUnauthorizedHandler(fn) {
+  unauthorizedHandler = fn
+}
+function fireUnauthorized() {
+  if (unauthorizedHandler) unauthorizedHandler()
+}
 export function setToken(t) {
   if (t) localStorage.setItem(TOKEN_KEY, t)
   else localStorage.removeItem(TOKEN_KEY)
@@ -33,6 +43,7 @@ export async function api(path, opts = {}) {
     const msg = (data && (data.detail || data.message)) || '请求失败 (' + res.status + ')'
     const e = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
     e.status = res.status
+    if (res.status === 401) fireUnauthorized()
     throw e
   }
   return data
@@ -53,8 +64,10 @@ export async function apiBlob(path, opts = {}) {
         detail = await res.json()
       } catch (e) {}
       const msg = (detail && (detail.detail || detail.message)) || '下载失败 (' + res.status + ')'
+      if (res.status === 401) fireUnauthorized()
       throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
     }
+    if (res.status === 401) fireUnauthorized()
     throw new Error('下载失败 (' + res.status + ')')
   }
   return { blob: await res.blob(), disposition: res.headers.get('Content-Disposition') }
