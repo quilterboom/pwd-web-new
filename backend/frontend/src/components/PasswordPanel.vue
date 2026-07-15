@@ -10,6 +10,7 @@ import {
   requestDelete,
   requestBatchDelete,
   showToast,
+  can,
 } from '../store'
 import { api } from '../api/http'
 import { algoBadge, groupName, fmtTime } from '../utils'
@@ -147,6 +148,7 @@ function openBatchDelete() {
           <input type="checkbox" :checked="allSelected" @change="toggleAll" /> 全选
         </label>
         <button
+          v-if="can('pw.export')"
           id="export-btn"
           class="btn ghost"
           :disabled="!state.selectedIds.length"
@@ -156,6 +158,7 @@ function openBatchDelete() {
           📤 导出{{ state.selectedIds.length ? ' (' + state.selectedIds.length + ')' : '' }}
         </button>
         <button
+          v-if="can('pw.batch_delete')"
           class="btn danger ghost"
           :disabled="!state.selectedIds.length"
           title="批量删除所选密码（需二次确认）"
@@ -163,7 +166,7 @@ function openBatchDelete() {
         >
           🗑 批量删除{{ state.selectedIds.length ? ' (' + state.selectedIds.length + ')' : '' }}
         </button>
-        <button class="btn ghost" title="批量导入密码" @click="showImport = true">📥 导入</button>
+        <button v-if="can('pw.import')" class="btn ghost" title="批量导入密码" @click="showImport = true">📥 导入</button>
       </div>
       <div class="toolbar-group">
         <select v-model="filterGroup" class="filter-select" title="按分组筛选">
@@ -176,7 +179,7 @@ function openBatchDelete() {
         <input id="search-input" v-model="search" type="text" placeholder="搜索用户名 / 密码文件名称 / 系统 / 备注…" />
       </div>
       <div class="toolbar-group toolbar-actions">
-        <button class="btn primary" title="新增一条密码" @click="openAdd">＋ 新增</button>
+        <button v-if="can('pw.create')" class="btn primary" title="新增一条密码" @click="openAdd">＋ 新增</button>
       </div>
     </div>
 
@@ -214,10 +217,10 @@ function openBatchDelete() {
           <td>{{ e.updated_by || e.created_by || '' }}</td>
           <td>
             <div class="ops">
-              <button class="btn ghost small" @click="openView(e.id)">查看</button>
-              <button class="btn ghost small" @click="openEdit(e.id)">编辑</button>
-              <button class="btn ghost small" @click="openHistory(e.id)">记录</button>
-              <button class="btn danger small" @click="onDeleted(e.id)">删除</button>
+              <button v-if="can('pw.view')" class="btn ghost small" @click="openView(e.id)">查看</button>
+              <button v-if="can('pw.edit')" class="btn ghost small" @click="openEdit(e.id)">编辑</button>
+              <button v-if="can('pw.view')" class="btn ghost small" @click="openHistory(e.id)">记录</button>
+              <button v-if="can('pw.delete')" class="btn danger small" @click="onDeleted(e.id)">删除</button>
             </div>
           </td>
         </tr>

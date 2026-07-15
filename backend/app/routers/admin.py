@@ -20,6 +20,7 @@ from ..core.deps import (
 )
 from ..db import get_db
 from ..models import Group, History, PasswordEntry, User, user_groups, user_admin_groups
+from ..perms import require_perm
 from ..security import derive_password_verifier, hash_password
 
 # ---------------- 当前用户可见分组（非管理员接口） ----------------
@@ -207,7 +208,7 @@ def _seed_login_material(user: User, password: str) -> None:
     user.pw_verifier = derive_password_verifier(password, salt)
 
 
-@users_router.post("")
+@users_router.post("", dependencies=[Depends(require_perm("sys.user_manage"))])
 def create_user(
     req: UserCreate,
     caller: User = Depends(require_admin),
@@ -247,7 +248,7 @@ def create_user(
     return {"id": user.id, "username": user.username, "message": "created"}
 
 
-@users_router.put("/{uid}")
+@users_router.put("/{uid}", dependencies=[Depends(require_perm("sys.user_manage"))])
 def update_user(
     uid: int,
     req: UserUpdate,
@@ -302,7 +303,7 @@ def update_user(
     return {"id": user.id, "username": user.username, "message": "updated"}
 
 
-@users_router.delete("/{uid}")
+@users_router.delete("/{uid}", dependencies=[Depends(require_perm("sys.user_manage"))])
 def delete_user(
     uid: int,
     admin: User = Depends(require_admin),
@@ -373,7 +374,7 @@ def list_groups(
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
-@groups_router.post("")
+@groups_router.post("", dependencies=[Depends(require_perm("sys.group_manage"))])
 def create_group(
     req: GroupCreate,
     caller: User = Depends(require_admin),
@@ -401,7 +402,7 @@ def create_group(
     return {"id": group.id, "name": group.name, "message": "created"}
 
 
-@groups_router.put("/{gid}")
+@groups_router.put("/{gid}", dependencies=[Depends(require_perm("sys.group_manage"))])
 def update_group(
     gid: int,
     req: GroupUpdate,
@@ -438,7 +439,7 @@ def update_group(
     return {"id": group.id, "name": group.name, "message": "updated"}
 
 
-@groups_router.delete("/{gid}")
+@groups_router.delete("/{gid}", dependencies=[Depends(require_perm("sys.group_manage"))])
 def delete_group(
     gid: int,
     caller: User = Depends(require_admin),
@@ -479,7 +480,7 @@ def _audit_out(r, groups_by_id: dict) -> dict:
     }
 
 
-@audit_router.get("")
+@audit_router.get("", dependencies=[Depends(require_perm("sys.audit_view"))])
 def list_audit(
     action: Optional[str] = None,
     q: Optional[str] = None,

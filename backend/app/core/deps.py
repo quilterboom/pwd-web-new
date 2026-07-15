@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..models import Group, User, user_groups, user_admin_groups
 from ..security import decode_token
+from ..sessions import is_session_valid
 
 bearer_scheme = HTTPBearer()
 
@@ -16,8 +17,14 @@ def get_current_user(
     try:
         payload = decode_token(creds.credentials)
         username = payload.get("sub")
+        jti = payload.get("jti")
     except Exception:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="无效或过期的令牌")
+
+    # 服务端会话校验：令牌必须对应一个有效（未吊销、未空闲超时）的会话，
+    # 否则即便 JWT 未过期也视为登录失效（服务端强制失效）。
+    if not is_session_valid(db, jti):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="登录已失效，请重新登录")
 
     user = db.query(User).filter_by(username=username).first()
     if user is None:
@@ -28,6 +35,15 @@ def get_current_user(
 def require_admin(user: User = Depends(get_current_user)) -> User:
     if not user.is_admin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="需要管理员权限")
+    return user
+
+
+def require_global_admin(
+    user: User = Depends(get_current_user), db: Session = Depends(get_db)
+) -> User:
+    """仅超级管理员（is_admin 且未限定管理分组）可通过；分组管理员被拒。"""
+    if not is_global_admin(db, user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="需要超级管理员权限")
     return user
 
 

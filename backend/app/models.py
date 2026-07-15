@@ -126,6 +126,19 @@ class PasswordEntry(Base):
     deleted = Column(Boolean, default=False)
 
 
+class UserPermission(Base):
+    """逐用户操作授权：仅存储「被允许的操作 key 清单」（JSON 数组）。
+
+    - 没有记录（表中无该行）：该用户全部操作可用（授权即限制，默认全开）。
+    - 有记录：仅 perms 清单内的操作可用；管理员（is_admin）永远全开，不受此限制。
+    """
+
+    __tablename__ = "user_permissions"
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    perms = Column(Text, default="[]", nullable=False)  # JSON 数组，如 ["pw.create","pw.view"]
+
+
 class History(Base):
     """修改记录（审计日志）。仅保存加密后的密文快照，绝不落库明文。"""
 
@@ -144,4 +157,24 @@ class History(Base):
     changed_by = Column(String(64))
     changed_at = Column(DateTime, default=_utcnow)
     comment = Column(String(255))  # 人类可读说明，如“修改了 secret,notes”
+
+
+class AuthSession(Base):
+    """登录会话：服务端强制失效的核心。
+
+    JWT 本身无状态，无法在登出 / 空闲后令其作废。本表记录每个令牌对应的服务端会话：
+    - jti           : 令牌中的唯一会话 id（JWT payload 的 jti 字段）
+    - user_id       : 所属用户
+    - created_at    : 会话创建时间（epoch 秒）
+    - last_activity : 最近一次有效请求时间（epoch 秒），用于服务端空闲超时
+    - revoked       : 是否已吊销（登出 / 空闲过期后置 True，令牌立即作废）
+    """
+
+    __tablename__ = "auth_sessions"
+
+    jti = Column(String(64), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at = Column(Integer, nullable=False)
+    last_activity = Column(Integer, nullable=False)
+    revoked = Column(Boolean, default=False, nullable=False)
 

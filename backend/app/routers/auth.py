@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -10,11 +11,17 @@ from ..config import ALLOW_REGISTRATION, REGISTER_DEFAULT_GROUP
 from ..core.deps import get_current_user, get_user_groups, is_global_admin
 from ..db import get_db
 from ..models import Group, User
+from ..perms import (
+    PERMISSION_CATALOG,
+    get_user_permissions,
+    require_perm,
+)
 from ..seed import _seed_login_material
 from .admin import _link_user_group
 from ..security import (
     consume_login_challenge,
     create_token,
+    decode_token,
     derive_password_verifier,
     expected_proof,
     hash_password,
@@ -22,6 +29,9 @@ from ..security import (
     store_login_challenge,
     verify_password,
 )
+from ..sessions import create_session, new_jti, revoke_session
+
+bearer_scheme = HTTPBearer()
 
 # ── 登录限速（内存固定窗口；单进程部署足够）──
 # 针对三个登录入口（begin / verify / 旧 login）统一限速，遏制在线爆破与重放探测。
@@ -73,7 +83,9 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
         user.pw_verifier = derive_password_verifier(req.password, salt)
         db.commit()
 
-    token = create_token(user.username)
+    jti = new_jti()
+    create_session(db, user.id, jti)
+    token = create_token(user.username, jti)
     return {"access_token": token, "token_type": "bearer"}
 
 
@@ -131,19 +143,45 @@ def login_verify(req: LoginVerifyRequest, request: Request, db: Session = Depend
     # constant-time 比较，避免 timing leak
     if not secrets.compare_digest(expected.lower(), (req.proof or "").lower()):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
-    token = create_token(user.username)
+    jti = new_jti()
+    create_session(db, user.id, jti)
+    token = create_token(user.username, jti)
     return {"access_token": token, "token_type": "bearer"}
 
 
 @router.get("/me")
 def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     groups = [{"id": g.id, "name": g.name} for g in get_user_groups(db, user)]
+    # 管理员永远全开（permissions=None）；普通用户返回授权清单或 None（未授权=全部可用）
+    permissions = None if user.is_admin else get_user_permissions(db, user.id)
     return {
         "username": user.username,
         "is_admin": bool(user.is_admin),
         "is_global_admin": is_global_admin(db, user),
         "groups": groups,
+        "permissions": permissions,
     }
+
+
+@router.post("/logout")
+def logout(
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """服务端登出：吊销当前令牌对应的会话，令该令牌立即失效。
+
+    前端在「手动退出」与「空闲自动登出」时都应调用本接口，以实现服务端强制失效
+    （即使令牌被截获，登出后也无法再用）。
+    """
+    jti = decode_token(creds.credentials).get("jti")
+    revoke_session(db, jti)
+    return {"ok": True, "message": "已退出登录"}
+
+
+@router.get("/permissions/catalog")
+def permissions_catalog(_: User = Depends(get_current_user)):
+    """返回操作授权目录（按页面分组），供授权管理页渲染勾选框。"""
+    return PERMISSION_CATALOG
 
 
 # ────────── 自助注册（受 ALLOW_REGISTRATION 总开关控制）──────────
@@ -176,6 +214,12 @@ def _register_rate_limit(request: Request) -> None:
     if len(_register_hits[client]) >= _REGISTER_LIMIT:
         raise HTTPException(status_code=429, detail="注册过于频繁，请稍后再试")
     _register_hits[client].append(now)
+
+
+@router.get("/register/status")
+def register_status():
+    """公开端点：返回当前是否开放自助注册，供登录页决定是否展示「注册」入口。无需鉴权。"""
+    return {"allow_registration": bool(ALLOW_REGISTRATION)}
 
 
 @router.post("/register")
@@ -232,6 +276,7 @@ def change_password_begin(
     user: User = Depends(get_current_user),
     request: Request = None,
     db: Session = Depends(get_db),
+    _: User = Depends(require_perm("account.change_password")),
 ):
     """下发一次性挑战（salt + nonce），供前端用「当前密码」计算 SCRAM 证明。"""
     if request is not None:
@@ -256,6 +301,7 @@ def change_password_verify(
     user: User = Depends(get_current_user),
     request: Request = None,
     db: Session = Depends(get_db),
+    _: User = Depends(require_perm("account.change_password")),
 ):
     """校验「当前密码」后写入新密码。本端点基于已登录身份，仅能修改自己的密码。"""
     if request is not None:

@@ -5,6 +5,7 @@ import { fmtTime, HISTORY_ACTION_LABELS, humanizeComment, algoBadge, groupName }
 import UserFormModal from './UserFormModal.vue'
 import GroupFormModal from './GroupFormModal.vue'
 import UserBatchModal from './UserBatchModal.vue'
+import PermPanel from './PermPanel.vue'
 
 const emit = defineEmits(['close'])
 
@@ -190,6 +191,7 @@ watch(pageSize, () => {
         <button class="subtab" :class="{ active: subtab === 'users' }" @click="switchSub('users')">用户</button>
         <button class="subtab" :class="{ active: subtab === 'groups' }" @click="switchSub('groups')">分组</button>
         <button class="subtab" :class="{ active: subtab === 'audit' }" @click="switchSub('audit')">审计日志</button>
+        <button v-if="state.isGlobalAdmin" class="subtab" :class="{ active: subtab === 'perm' }" @click="switchSub('perm')">授权管理</button>
       </nav>
 
       <!-- 用户 -->
@@ -328,6 +330,8 @@ watch(pageSize, () => {
         </div>
         <p class="audit-tip">说明：删除密码会在此生成一条「删除」记录，含操作人与用户名，便于管理员审计。</p>
       </section>
+
+      <PermPanel v-if="subtab === 'perm'" />
 
       <div class="modal-actions">
         <button class="btn ghost" @click="emit('close')">关闭</button>

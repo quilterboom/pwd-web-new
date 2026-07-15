@@ -39,6 +39,30 @@ export async function register(username, password) {
   })
 }
 
+// 公开：查询当前是否开放自助注册（登录页据此决定是否显示「注册」入口）。
+export async function registerStatus() {
+  return api('/api/auth/register/status')
+}
+
+// 授权管理：操作目录（按页面分组），供授权页渲染勾选框。
+export async function permissionsCatalog() {
+  return api('/api/auth/permissions/catalog')
+}
+
+// 授权管理（超管）：读取/设置/重置 指定用户的操作权限。
+export async function getUserPermissions(uid) {
+  return api(`/api/admin/permissions/users/${uid}`)
+}
+export async function setUserPermissions(uid, permissions) {
+  return api(`/api/admin/permissions/users/${uid}`, {
+    method: 'PUT',
+    body: JSON.stringify({ permissions }),
+  })
+}
+export async function resetUserPermissions(uid) {
+  return api(`/api/admin/permissions/users/${uid}`, { method: 'DELETE' })
+}
+
 // 自助改密：SCRAM-SM3 优先，legacy 账号用 current_password 明文兜底。
 export async function changePassword(current, next) {
   const begin = await api('/api/auth/change-password/begin', { method: 'POST', body: '{}' })
@@ -53,4 +77,14 @@ export async function changePassword(current, next) {
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+// 服务端登出：吊销当前令牌对应的会话，使其立即失效（即便被截获也无法再用）。
+// 空闲自动登出与手动退出都应调用，以实现「服务端强制失效」。
+export async function logout() {
+  try {
+    await api('/api/auth/logout', { method: 'POST' })
+  } catch (e) {
+    // 令牌可能已失效（如空闲超时后被服务端吊销），忽略错误，本地照常清状态
+  }
 }

@@ -1,11 +1,13 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { doLogin, showToast } from '../store'
-import { register as apiRegister } from '../api/auth'
+import { register as apiRegister, registerStatus } from '../api/auth'
 
 const emit = defineEmits(['logged-in'])
 
 const mode = ref('login') // 'login' | 'register'
+// 是否开放自助注册（由后端公开端点探测；默认 false，防误展示一个必然 403 的入口）
+const allowRegister = ref(false)
 
 // 登录字段
 const username = ref('')
@@ -17,6 +19,16 @@ const regConfirm = ref('')
 
 const error = ref('')
 const loading = ref(false)
+
+// 登录页加载即查询注册开关，决定「注册」入口是否展示
+onMounted(async () => {
+  try {
+    const r = await registerStatus()
+    allowRegister.value = !!r.allow_registration
+  } catch {
+    allowRegister.value = false
+  }
+})
 
 async function onSubmit() {
   error.value = ''
@@ -81,7 +93,7 @@ async function onRegister() {
         <label>密码</label>
         <input v-model="password" type="password" autocomplete="current-password" required />
         <button type="submit" class="btn primary" :disabled="loading">登录</button>
-        <div class="switch-row">
+        <div class="switch-row" v-if="allowRegister">
           <span>还没有账号？</span>
           <a href="#" @click.prevent="mode = 'register'">注册</a>
         </div>

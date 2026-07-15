@@ -15,6 +15,7 @@ from ..core.deps import (
 from ..crypto import manager
 from ..db import get_db
 from ..models import History, KeyRecord, OrgKey, User
+from ..perms import require_perm
 
 router = APIRouter(tags=["keys"])
 
@@ -194,7 +195,7 @@ def _orgkey_out(r: OrgKey) -> dict:
     }
 
 
-@orgkeys_router.post("/generate")
+@orgkeys_router.post("/generate", dependencies=[Depends(require_perm("key.generate"))])
 def generate_orgkey(req: GenerateRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     if req.algorithm not in manager.SUPPORTED:
         raise HTTPException(status_code=400, detail=f"不支持的算法: {req.algorithm}")
@@ -221,7 +222,7 @@ def generate_orgkey(req: GenerateRequest, db: Session = Depends(get_db), user: U
     return {"id": rec.id, "fingerprint": fp, "algorithm": rec.algorithm, "has_private": rec.has_private, "private_protected": False}
 
 
-@orgkeys_router.post("/import")
+@orgkeys_router.post("/import", dependencies=[Depends(require_perm("key.import"))])
 def import_orgkey(req: ImportRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="请输入密钥名称")
@@ -304,7 +305,7 @@ class BatchDeleteKeysRequest(BaseModel):
     ids: List[int]
 
 
-@orgkeys_router.post("/batch-delete")
+@orgkeys_router.post("/batch-delete", dependencies=[Depends(require_perm("key.batch_delete"))])
 def batch_delete_orgkeys(
     req: BatchDeleteKeysRequest,
     db: Session = Depends(get_db),
@@ -349,7 +350,7 @@ def batch_delete_orgkeys(
     return {"deleted": deleted, "skipped": skipped, "requested": len(req.ids)}
 
 
-@orgkeys_router.delete("/{kid}")
+@orgkeys_router.delete("/{kid}", dependencies=[Depends(require_perm("key.delete"))])
 def delete_orgkey(kid: int, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     rec = db.query(OrgKey).filter_by(id=kid).first()
     if rec is None:

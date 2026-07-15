@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { state, doLogout, bootstrap, loadEntries, loadKeysStatus, loadOrgKeys } from './store'
+import { state, doLogout, bootstrap, loadEntries, loadKeysStatus, loadOrgKeys, can, startIdleMonitor } from './store'
 import Login from './components/Login.vue'
 import PasswordPanel from './components/PasswordPanel.vue'
 import KeyPanel from './components/KeyPanel.vue'
@@ -34,11 +34,15 @@ function onLogout() {
 
 onMounted(async () => {
   const ok = await bootstrap()
-  if (ok) await enterApp()
+  if (ok) {
+    startIdleMonitor() // 恢复会话成功即启动空闲监听
+    await enterApp()
+  }
 })
 
 // 登录成功后由 Login 组件通知进入主界面
 function onLoggedIn() {
+  startIdleMonitor() // 登录成功即启动（或重置）空闲倒计时
   enterApp()
 }
 </script>
@@ -52,7 +56,7 @@ function onLoggedIn() {
       <div class="spacer"></div>
       <span class="user">👤 {{ state.user }}{{ state.isAdmin ? '（管理员）' : '' }}</span>
       <button v-if="state.isAdmin" class="btn ghost" @click="showAdmin = true">⚙️ 管理</button>
-      <button class="btn ghost" @click="showChangePw = true">🔑 修改密码</button>
+      <button v-if="can('account.change_password')" class="btn ghost" @click="showChangePw = true">🔑 修改密码</button>
       <button class="btn ghost" @click="onLogout">退出</button>
     </header>
 

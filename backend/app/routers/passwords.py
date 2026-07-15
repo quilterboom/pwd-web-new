@@ -20,6 +20,7 @@ from ..core.deps import (
 from ..crypto import entry_cipher, manager
 from ..db import get_db
 from ..models import Group, History, OrgKey, PasswordEntry, User
+from ..perms import require_perm
 
 router = APIRouter(
     prefix="/api/passwords",
@@ -284,7 +285,7 @@ def list_passwords(
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_perm("pw.create"))])
 def create(
     req: CreateRequest,
     db: Session = Depends(get_db),
@@ -400,7 +401,7 @@ def _xlsx_bytes_passwords() -> bytes:
     return buf.getvalue()
 
 
-@router.get("/template")
+@router.get("/template", dependencies=[Depends(require_perm("pw.import"))])
 def download_password_template(
     fmt: str = "xlsx",
     _: User = Depends(get_current_user),
@@ -503,7 +504,7 @@ class PasswordImportResponse(BaseModel):
     rows: List[PasswordImportRow]
 
 
-@router.post("/import", response_model=PasswordImportResponse)
+@router.post("/import", response_model=PasswordImportResponse, dependencies=[Depends(require_perm("pw.import"))])
 async def import_passwords(
     file: UploadFile = File(...),
     algorithm: str = Form("symmetric"),
@@ -650,7 +651,7 @@ async def import_passwords(
         rows=results,
     )
 
-@router.get("/{pid}")
+@router.get("/{pid}", dependencies=[Depends(require_perm("pw.view"))])
 def get_one(
     pid: int,
     db: Session = Depends(get_db),
@@ -671,7 +672,7 @@ def get_one(
     return {**_serialize_meta(db, entry), "secret": secret}
 
 
-@router.post("/{pid}/unlock")
+@router.post("/{pid}/unlock", dependencies=[Depends(require_perm("pw.view"))])
 def unlock(
     pid: int,
     req: UnlockRequest,
@@ -688,7 +689,7 @@ def unlock(
     return {**_serialize_meta(db, entry), "secret": secret}
 
 
-@router.put("/{pid}")
+@router.put("/{pid}", dependencies=[Depends(require_perm("pw.edit"))])
 def update(
     pid: int,
     req: UpdateRequest,
@@ -843,7 +844,7 @@ class BatchDeleteRequest(BaseModel):
     ids: List[int]
 
 
-@router.post("/batch-delete")
+@router.post("/batch-delete", dependencies=[Depends(require_perm("pw.batch_delete"))])
 def batch_delete(
     req: BatchDeleteRequest,
     db: Session = Depends(get_db),
@@ -888,7 +889,7 @@ def batch_delete(
     return {"deleted": deleted, "skipped": skipped, "requested": len(req.ids)}
 
 
-@router.delete("/{pid}")
+@router.delete("/{pid}", dependencies=[Depends(require_perm("pw.delete"))])
 def delete(
     pid: int,
     db: Session = Depends(get_db),
@@ -1067,7 +1068,7 @@ def _xlsx_bytes_export(rows: list, plaintext: bool, skipped: int) -> bytes:
     return buf.getvalue()
 
 
-@router.post("/export")
+@router.post("/export", dependencies=[Depends(require_perm("pw.export"))])
 def export_passwords(
     req: ExportRequest,
     db: Session = Depends(get_db),

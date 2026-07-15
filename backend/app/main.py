@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 from . import seed
-from .routers import admin, auth, history, keys, passwords, users_batch
+from .routers import admin, auth, history, keys, passwords, permissions, users_batch
 from .routers.keys import orgkeys_router
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -78,6 +78,7 @@ app.include_router(history.router)
 app.include_router(keys.router)
 app.include_router(orgkeys_router)
 app.include_router(users_batch.router)
+app.include_router(permissions.router)
 
 
 # 前端静态资源（html/js/css）禁止浏览器缓存，避免“旧 app.js + 新 html（或反之）”资源不一致
