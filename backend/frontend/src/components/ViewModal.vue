@@ -3,17 +3,17 @@ import { computed, onMounted, ref } from 'vue'
 import { state, api, showWait, hideWait, showToast, showError } from '../store'
 import { algoBadge, groupName, fmtTime } from '../utils'
 
-const props = defineProps({ id: { type: Number, required: true } })
+const props = defineProps({ entry: { type: Object, required: true } })
 const emit = defineEmits(['close'])
 
-const entry = computed(() => state.entries.find((e) => e.id === props.id))
+const id = computed(() => props.entry.id)
 const secret = ref('')
 const locked = ref(false)
 const lockError = ref('')
 const lockPassword = ref('')
 
 async function fetchSecret(pw) {
-  const full = await api('/api/passwords/' + props.id + '/unlock', {
+  const full = await api('/api/passwords/' + id.value + '/unlock', {
     method: 'POST',
     body: JSON.stringify({ entry_password: pw || '' }),
   })
@@ -21,8 +21,8 @@ async function fetchSecret(pw) {
 }
 
 onMounted(async () => {
-  if (!entry.value) return
-  if (entry.value.needs_password) {
+  if (!props.entry) return
+  if (props.entry.needs_password) {
     locked.value = true
   } else {
     showWait('正在解密…')
@@ -66,10 +66,10 @@ function copySecret() {
   <div class="modal">
     <div class="modal-card">
       <button class="modal-close" type="button" aria-label="关闭" title="关闭" @click="emit('close')">✕</button>
-      <h2>查看：{{ entry ? (entry.title || entry.username) : '' }}</h2>
-      <div class="kv"><span>密码文件名称</span><b>{{ entry ? (entry.title || '—') : '—' }}</b></div>
-      <div class="kv"><span>系统</span><b>{{ entry ? (entry.system || '—') : '—' }}</b></div>
-      <div class="kv"><span>用户名</span><b>{{ entry ? entry.username : '—' }}</b></div>
+      <h2>查看：{{ entry.title || entry.username }}</h2>
+      <div class="kv"><span>密码文件名称</span><b>{{ entry.title || '—' }}</b></div>
+      <div class="kv"><span>系统</span><b>{{ entry.system || '—' }}</b></div>
+      <div class="kv"><span>用户名</span><b>{{ entry.username || '—' }}</b></div>
       <div class="kv" v-if="entry">
         <span>加密方式</span>
         <b>

@@ -8,6 +8,12 @@ import {
   resetUserPermissions,
 } from '../api/auth'
 
+// 支持从用户列表「授权」按钮传入预选用户 uid
+const props = defineProps({
+  uid: { type: Number, default: null },
+})
+const emit = defineEmits(['close'])
+
 const catalog = ref([])
 const selectedUid = ref(null)
 const checked = reactive({}) // key -> bool
@@ -24,6 +30,8 @@ async function loadCatalog() {
     catalog.value = await permissionsCatalog()
     // 初始化 checked 结构
     for (const k of allKeys.value) checked[k] = true
+    // 若外部传入预选用户，目录就绪后自动选中
+    if (props.uid) selectedUid.value = props.uid
   } catch (e) {
     showToast('加载操作目录失败：' + e.message)
   }
@@ -92,10 +100,21 @@ async function reset() {
 
 onMounted(loadCatalog)
 watch(selectedUid, onSelectUser)
+// 用户列表点了「授权」后再切到另一个用户时，复用组件需重新选中
+watch(
+  () => props.uid,
+  (uid) => {
+    if (uid) selectedUid.value = uid
+  },
+)
 </script>
 
 <template>
   <section>
+    <div class="toolbar">
+      <button class="btn ghost small" type="button" @click="emit('close')">← 返回用户列表</button>
+      <div class="spacer"></div>
+    </div>
     <div class="toolbar">
       <div class="toolbar-group">
         <label class="field-label">选择用户：</label>

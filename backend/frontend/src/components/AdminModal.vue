@@ -35,6 +35,10 @@ const showGroupForm = ref(false)
 const showUserBatch = ref(false)
 const editingUser = ref(null)
 const editingGroup = ref(null)
+// 从用户列表「授权」按钮进入授权面板时的预选用户
+const permUid = ref(null)
+// 授权面板是否以覆盖层形式打开（不再用子 tab）
+const permOpen = ref(false)
 
 function buildQs(page, size, extra) {
   const p = new URLSearchParams()
@@ -103,9 +107,9 @@ onMounted(async () => {
     showToast('加载管理数据失败：' + e.message)
   }
   // 默认显示第一个当前用户有权限查看的子标签（避免子标签因权限被隐藏时默认空白）
-  const permKey = { users: 'sys.user_manage', groups: 'sys.group_manage', audit: 'sys.audit_view', perm: null }
-  const order = ['users', 'groups', 'audit', 'perm']
-  const visible = order.filter((s) => (s === 'perm' ? state.isGlobalAdmin : can(permKey[s])))
+  const permKey = { users: 'sys.user_manage', groups: 'sys.group_manage', audit: 'sys.audit_view' }
+  const order = ['users', 'groups', 'audit']
+  const visible = order.filter((s) => can(permKey[s]))
   if (!visible.includes(subtab.value)) subtab.value = visible[0] || 'users'
 })
 
@@ -113,6 +117,12 @@ async function afterUserSaved() {
   showUserForm.value = false
   await Promise.all([loadUsers(), fetchUsers()])
   await refreshMe()
+}
+
+// 从用户列表点击「授权」：预选该用户并打开授权面板（覆盖在用户列表之上）
+function openPerm(u) {
+  permUid.value = u.id
+  permOpen.value = true
 }
 async function afterGroupSaved() {
   showGroupForm.value = false
@@ -196,11 +206,10 @@ watch(pageSize, () => {
         <button v-if="can('sys.user_manage')" class="subtab" :class="{ active: subtab === 'users' }" @click="switchSub('users')">用户</button>
         <button v-if="can('sys.group_manage')" class="subtab" :class="{ active: subtab === 'groups' }" @click="switchSub('groups')">分组</button>
         <button v-if="can('sys.audit_view')" class="subtab" :class="{ active: subtab === 'audit' }" @click="switchSub('audit')">审计日志</button>
-        <button v-if="state.isGlobalAdmin" class="subtab" :class="{ active: subtab === 'perm' }" @click="switchSub('perm')">授权管理</button>
       </nav>
 
       <!-- 用户 -->
-      <section v-show="subtab === 'users' && can('sys.user_manage')">
+      <section v-show="subtab === 'users' && can('sys.user_manage') && !permOpen">
         <div class="toolbar key-toolbar">
           <div class="toolbar-group toolbar-actions">
             <button v-if="can('sys.user_manage')" class="btn ghost" @click="showUserBatch = true">📥 批量新增</button>
@@ -231,6 +240,7 @@ watch(pageSize, () => {
               <td>{{ u.groups.map((g) => g.name).join('、') || '—' }}</td>
               <td>
                 <div class="ops">
+                  <button v-if="state.isAdmin" class="btn ghost small" @click="openPerm(u)">授权</button>
                   <button v-if="can('sys.user_manage')" class="btn ghost small" @click="(editingUser = u, showUserForm = true)">编辑</button>
                   <button v-if="can('sys.user_manage')" class="btn danger small" @click="deleteUser(u.id)">删除</button>
                 </div>
@@ -252,7 +262,7 @@ watch(pageSize, () => {
       </section>
 
       <!-- 分组 -->
-      <section v-show="subtab === 'groups' && can('sys.group_manage')">
+      <section v-show="subtab === 'groups' && can('sys.group_manage') && !permOpen">
         <div class="toolbar">
           <div class="spacer"></div>
           <div class="toolbar-group">
@@ -292,7 +302,7 @@ watch(pageSize, () => {
       </section>
 
       <!-- 审计 -->
-      <section v-show="subtab === 'audit' && can('sys.audit_view')">
+      <section v-show="subtab === 'audit' && can('sys.audit_view') && !permOpen">
         <div class="toolbar">
           <div class="toolbar-group">
             <div class="seg-group" id="audit-filter" role="group" aria-label="审计类型筛选">
@@ -309,13 +319,13 @@ watch(pageSize, () => {
         </div>
         <table class="pw-table hist-table">
           <thead>
-            <tr><th>时间</th><th>动作</th><th>用户名</th><th>分组</th><th>操作人</th><th>说明</th></tr>
+            <tr><th>时间</th><th>动作</th><th>密码文件名称</th><th>分组</th><th>操作人</th><th>说明</th></tr>
           </thead>
           <tbody>
             <tr v-for="r in audit" :key="r.id">
               <td>{{ fmtTime(r.changed_at) }}</td>
               <td :class="'act-' + r.action">{{ HISTORY_ACTION_LABELS[r.action] || r.action }}</td>
-              <td>{{ r.username || '' }}</td>
+              <td>{{ r.title || r.username || '—' }}</td>
               <td>{{ r.group_name || '—' }}</td>
               <td>{{ r.changed_by || '' }}</td>
               <td><div class="comment-cell" :title="humanizeComment(r.comment || '')">{{ humanizeComment(r.comment || '') }}</div></td>
@@ -333,10 +343,11 @@ watch(pageSize, () => {
           <span class="pager-info">第 {{ auditPage }} / {{ auditPages }} 页 · 共 {{ auditTotal }} 条</span>
           <button class="btn ghost small" :disabled="auditPage >= auditPages" @click="gotoAudit(1)">下一页 ›</button>
         </div>
-        <p class="audit-tip">说明：删除密码会在此生成一条「删除」记录，含操作人与用户名，便于管理员审计。</p>
+        <p class="audit-tip">说明：删除密码会在此生成一条「删除」记录，含操作人与密码文件名称，便于管理员审计。</p>
       </section>
 
-      <PermPanel v-if="subtab === 'perm'" />
+      <!-- 授权面板：从用户列表「授权」按钮覆盖打开，不再作为子 tab -->
+      <PermPanel v-if="permOpen" :uid="permUid" @close="permOpen = false" />
 
       <div class="modal-actions">
         <button class="btn ghost" @click="emit('close')">关闭</button>

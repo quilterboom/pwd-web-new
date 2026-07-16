@@ -12,8 +12,8 @@ let unauthorizedHandler = null
 export function setUnauthorizedHandler(fn) {
   unauthorizedHandler = fn
 }
-function fireUnauthorized() {
-  if (unauthorizedHandler) unauthorizedHandler()
+function fireUnauthorized(msg) {
+  if (unauthorizedHandler) unauthorizedHandler(msg)
 }
 export function setToken(t) {
   if (t) localStorage.setItem(TOKEN_KEY, t)
@@ -43,7 +43,7 @@ export async function api(path, opts = {}) {
     const msg = (data && (data.detail || data.message)) || '请求失败 (' + res.status + ')'
     const e = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
     e.status = res.status
-    if (res.status === 401) fireUnauthorized()
+    if (res.status === 401) fireUnauthorized(msg)
     throw e
   }
   return data
@@ -64,10 +64,10 @@ export async function apiBlob(path, opts = {}) {
         detail = await res.json()
       } catch (e) {}
       const msg = (detail && (detail.detail || detail.message)) || '下载失败 (' + res.status + ')'
-      if (res.status === 401) fireUnauthorized()
+      if (res.status === 401) fireUnauthorized(msg)
       throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
     }
-    if (res.status === 401) fireUnauthorized()
+    if (res.status === 401) fireUnauthorized('登录已失效，请重新登录')
     throw new Error('下载失败 (' + res.status + ')')
   }
   return { blob: await res.blob(), disposition: res.headers.get('Content-Disposition') }

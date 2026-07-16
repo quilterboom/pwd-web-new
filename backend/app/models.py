@@ -167,7 +167,8 @@ class AuthSession(Base):
     - user_id       : 所属用户
     - created_at    : 会话创建时间（epoch 秒）
     - last_activity : 最近一次有效请求时间（epoch 秒），用于服务端空闲超时
-    - revoked       : 是否已吊销（登出 / 空闲过期后置 True，令牌立即作废）
+    - revoked       : 是否已吊销（登出 / 空闲过期 / 被新登录踢下线后置 True，令牌立即作废）
+    - ip            : 登录时的客户端 IP（用于「单账号单会话」诊断与展示）
     """
 
     __tablename__ = "auth_sessions"
@@ -177,4 +178,5 @@ class AuthSession(Base):
     created_at = Column(Integer, nullable=False)
     last_activity = Column(Integer, nullable=False)
     revoked = Column(Boolean, default=False, nullable=False)
+    ip = Column(String(64), default="", nullable=False)
 

@@ -29,9 +29,37 @@ from ..security import (
     store_login_challenge,
     verify_password,
 )
-from ..sessions import create_session, new_jti, revoke_session
+from ..sessions import (
+    create_session,
+    new_jti,
+    revoke_other_sessions,
+    revoke_session,
+    touch_session,
+)
 
 bearer_scheme = HTTPBearer()
+
+
+def _client_ip(request: Request) -> str:
+    """取真实客户端 IP：优先反向代理透传头，否则取直接连接地址。"""
+    fwd = request.headers.get("X-Forwarded-For")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    real = request.headers.get("X-Real-IP")
+    if real:
+        return real.strip()
+    return request.client.host if request.client else ""
+
+
+def _enforce_single_session(db: Session, user, jti: str, request: Request) -> None:
+    """单账号单会话：登录成功时为本次令牌建会话前，先吊销该用户所有其它会话。
+
+    效果：同一账号无论新登录来自哪个 IP，此前在其它 IP 上的登录都会立即失效，
+    只有「最新的这次」保持有效（满足「账号只能在一个登录态下使用」）。
+    """
+    ip = _client_ip(request)
+    revoke_other_sessions(db, user.id, jti)
+    create_session(db, user.id, jti, ip)
 
 # ── 登录限速（内存固定窗口；单进程部署足够）──
 # 针对三个登录入口（begin / verify / 旧 login）统一限速，遏制在线爆破与重放探测。
@@ -84,7 +112,7 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
         db.commit()
 
     jti = new_jti()
-    create_session(db, user.id, jti)
+    _enforce_single_session(db, user, jti, request)
     token = create_token(user.username, jti)
     return {"access_token": token, "token_type": "bearer"}
 
@@ -144,7 +172,7 @@ def login_verify(req: LoginVerifyRequest, request: Request, db: Session = Depend
     if not secrets.compare_digest(expected.lower(), (req.proof or "").lower()):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     jti = new_jti()
-    create_session(db, user.id, jti)
+    _enforce_single_session(db, user, jti, request)
     token = create_token(user.username, jti)
     return {"access_token": token, "token_type": "bearer"}
 
@@ -176,6 +204,22 @@ def logout(
     jti = decode_token(creds.credentials).get("jti")
     revoke_session(db, jti)
     return {"ok": True, "message": "已退出登录"}
+
+
+@router.post("/activity")
+def activity(
+    _: User = Depends(get_current_user),
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    """活动上报（心跳）：用户操作系统时前端周期调用，刷新服务端会话的空闲计时。
+
+    仅刷新 last_activity，不改变令牌本身。会话已失效（被吊销 / 空闲超时 / 旧令牌）时
+    get_current_user 已拦截并返回 401，不会走到这里。
+    """
+    jti = decode_token(creds.credentials).get("jti")
+    touch_session(db, jti)
+    return {"ok": True}
 
 
 @router.get("/permissions/catalog")

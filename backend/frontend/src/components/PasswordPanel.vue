@@ -27,7 +27,7 @@ const showHistory = ref(false)
 const showExport = ref(false)
 const showImport = ref(false)
 const editingEntry = ref(null)
-const viewingId = ref(null)
+const viewingEntry = ref(null)
 const historyId = ref(null)
 const filterGroup = ref('')
 const filterSystem = ref('')
@@ -104,8 +104,8 @@ function openEdit(id) {
   editingEntry.value = state.entries.find((e) => e.id === id) || null
   showForm.value = true
 }
-function openView(id) {
-  viewingId.value = id
+function openView(e) {
+  viewingEntry.value = e
   showView.value = true
 }
 function openHistory(id) {
@@ -113,7 +113,8 @@ function openHistory(id) {
   showHistory.value = true
 }
 function onDeleted(id) {
-  requestDelete('pw', id, (state.entries.find((e) => e.id === id) || {}).username || '#' + id)
+  const e = state.entries.find((x) => x.id === id) || entries.value.find((x) => x.id === id) || {}
+  requestDelete('pw', id, e.title || e.username || '未命名')
 }
 function afterSaved() {
   showForm.value = false
@@ -217,7 +218,7 @@ function openBatchDelete() {
           <td>{{ e.updated_by || e.created_by || '' }}</td>
           <td>
             <div class="ops">
-              <button v-if="can('pw.view')" class="btn ghost small" @click="openView(e.id)">查看</button>
+              <button v-if="can('pw.view')" class="btn ghost small" @click="openView(e)">查看</button>
               <button v-if="can('pw.edit')" class="btn ghost small" @click="openEdit(e.id)">编辑</button>
               <button v-if="can('pw.view')" class="btn ghost small" @click="openHistory(e.id)">记录</button>
               <button v-if="can('pw.delete')" class="btn danger small" @click="onDeleted(e.id)">删除</button>
@@ -244,7 +245,7 @@ function openBatchDelete() {
     <div v-if="loaded && entriesTotal === 0 && !hasFilter" class="empty">暂无密码记录，点击右上角「新增密码」开始。</div>
 
     <PasswordFormModal v-if="showForm" :entry="editingEntry" @close="showForm = false" @saved="afterSaved" />
-    <ViewModal v-if="showView" :id="viewingId" @close="showView = false" />
+    <ViewModal v-if="showView" :entry="viewingEntry" @close="showView = false" />
     <HistoryModal v-if="showHistory" :id="historyId" @close="showHistory = false" />
     <ExportModal v-if="showExport" @close="showExport = false" />
     <ImportModal v-if="showImport" @close="showImport = false" @imported="onImported" />

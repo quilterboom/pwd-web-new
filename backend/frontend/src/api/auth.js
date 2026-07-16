@@ -88,3 +88,13 @@ export async function logout() {
     // 令牌可能已失效（如空闲超时后被服务端吊销），忽略错误，本地照常清状态
   }
 }
+
+// 活动上报（心跳）：用户操作系统时周期调用，刷新服务端会话空闲计时。
+// best-effort：失败（如令牌已失效）静默忽略，交由全局 401 处理器统一登出。
+export async function activity() {
+  try {
+    await api('/api/auth/activity', { method: 'POST' })
+  } catch (e) {
+    // 忽略上报失败；若确为令牌失效，其他业务请求会触发 401 登出
+  }
+}

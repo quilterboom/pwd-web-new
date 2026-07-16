@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 import { api, getToken, setToken, setUser, getUser, setUnauthorizedHandler } from './api/http'
-import { login as apiLogin, me as apiMe, logout as apiLogout } from './api/auth'
+import { login as apiLogin, me as apiMe, logout as apiLogout, activity as apiActivity } from './api/auth'
 
 // 便于组件从 store 统一引用这些 HTTP 辅助函数
 export { api, apiBlob, triggerDownload, filenameFromDisposition } from './api/http'
@@ -88,21 +88,25 @@ function clearLocalAuth() {
 }
 
 // 登录超时 / 令牌失效：任意请求 401 时由 http.js 调用，自动跳回登录页（App.vue 依 state.token 切换）。
-setUnauthorizedHandler(() => {
+// 后端会带上具体原因（如「账号已在其他设备/地点登录」），直接展示给用户。
+setUnauthorizedHandler((msg) => {
   clearLocalAuth()
-  showToast('登录已过期，请重新登录', true)
+  showToast(msg || '登录已过期，请重新登录', true)
 })
 
 /* ---------- 空闲超时自动退出 ----------
- * 登录态下若连续 IDLE_TIMEOUT_MS（默认 1 分钟）无任何用户操作，自动取消登录状态。
+ * 登录态下若连续 IDLE_TIMEOUT_MS（默认 10 分钟）无任何用户操作，自动取消登录状态。
  * 监听全局活动事件，任一活动即刷新倒计时；倒计时归零则清登录态并提示。
  * 仅在已登录（state.token 存在）时生效；登出后定时器与监听自动失效。
  */
-const IDLE_TIMEOUT_MS = 60 * 1000 // 1 分钟无操作即登出
+const IDLE_TIMEOUT_MS = 600 * 1000 // 10 分钟无操作即登出（与服务端 SESSION_IDLE_SECONDS 默认对齐）
 const IDLE_RESET_THROTTLE_MS = 3000 // 活动重置节流，避免 mousemove 高频抖动
+// 服务端空闲心跳节流：用户持续操作时，每 ~20s 上报一次活动，确保服务端空闲计时与真实操作对齐
+const KEEPALIVE_THROTTLE_MS = 20 * 1000
 let idleTimer = null
 let idleBound = false
 let lastActivityTs = 0
+let lastKeepaliveTs = 0
 
 function triggerIdleLogout() {
   if (!state.token) return
@@ -122,6 +126,11 @@ function onActivity() {
   if (now - lastActivityTs < IDLE_RESET_THROTTLE_MS) return
   lastActivityTs = now
   resetIdleTimer()
+  // 节流上报服务端：用户操作系统时刷新令牌空闲计时，避免纯前端操作不打 API 导致令牌被服务端吊销
+  if (now - lastKeepaliveTs > KEEPALIVE_THROTTLE_MS) {
+    lastKeepaliveTs = now
+    apiActivity()
+  }
 }
 
 export function startIdleMonitor() {

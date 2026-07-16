@@ -184,12 +184,13 @@ async function save() {
     if (form.entryPassword !== form.entryPasswordConfirm)
       return (formError.value = '两次输入的解密密码不一致')
     const gid = Number(form.groupId)
-    const uName = form.username.trim().toLowerCase()
+    const addTitle = form.title.trim() || form.username.trim()
+    const tNorm = addTitle.toLowerCase()
     const dup = state.entries.find(
-      (e) => e.group_id === gid && (e.username || '').trim().toLowerCase() === uName && e.algorithm === algo
+      (e) => e.group_id === gid && (e.title || e.username || '').trim().toLowerCase() === tNorm && e.algorithm === algo
     )
     if (dup)
-      return (formError.value = `该分组下已存在用户名「${form.username.trim()}」且加密方式相同（${algo}），请勿重复新增`)
+      return (formError.value = `该分组下已存在密码文件名称「${addTitle}」且加密方式相同（${algo}），请勿重复新增`)
     payload.group_id = gid
     payload.secret = secret
     payload.algorithm = algo
@@ -197,6 +198,15 @@ async function save() {
     if (algo !== 'symmetric' && orgkeyId) payload.orgkey_id = orgkeyId
   } else {
     const rec = props.entry
+    // 编辑去重预校验（与后端一致：密码文件名称 + 加密方式，同一分组内，排除自身）
+    const gid = Number(form.groupId)
+    const editTitle = form.title.trim() || form.username.trim()
+    const tNorm = editTitle.toLowerCase()
+    const dup = state.entries.find(
+      (e) => e.id !== rec.id && e.group_id === gid && (e.title || e.username || '').trim().toLowerCase() === tNorm && e.algorithm === algo
+    )
+    if (dup)
+      return (formError.value = `该分组下已存在密码文件名称「${editTitle}」且加密方式相同（${algo}），请勿重复`)
     const needsPw = rec && rec.needs_password
     const curPw = form.entryPassword || editEntryPassword || ''
     if (needsPw && !curPw && !form.newEntryPassword)

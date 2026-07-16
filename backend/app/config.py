@@ -29,9 +29,10 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("TOKEN_EXPIRE_MINUTES", "1440"))  # 默认 24h
 
 # 服务端「登录态空闲失效」阈值（秒）：距上次活动时间超过该值，令牌在服务端被吊销，
-# 任何携带该令牌的请求都返回 401。与前端空闲自动登出（默认 60s）保持一致；
+# 任何携带该令牌的请求都返回 401。与前端空闲自动登出（默认 10 分钟）保持一致；
 # 该值是服务端兜底——即使前端因故未上报（如直接关标签页），服务端也会在空闲超时后失效令牌。
-SESSION_IDLE_SECONDS = int(os.getenv("SESSION_IDLE_SECONDS", "60"))
+# 可通过环境变量 SESSION_IDLE_SECONDS 覆盖（单位：秒）。
+SESSION_IDLE_SECONDS = int(os.getenv("SESSION_IDLE_SECONDS", "600"))  # 默认 10 分钟
 
 # 首次启动时创建的管理员账号（生产环境务必通过环境变量覆盖）
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")

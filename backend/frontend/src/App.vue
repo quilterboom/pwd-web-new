@@ -14,10 +14,9 @@ const showAdmin = ref(false)
 const showChangePw = ref(false)
 
 async function enterApp() {
-  await loadKeysStatus()
-  // 两套数据都预加载，保证首次切换到任一标签都有数据
-  await loadEntries()
-  await loadOrgKeys()
+  // 三类数据并行预加载，避免首个接口（密钥状态）拖慢密码列表就绪，
+  // 否则首次登录立刻点「查看」时 state.entries 尚未填充，弹窗会显示全 —
+  await Promise.all([loadKeysStatus(), loadEntries(), loadOrgKeys()])
 }
 
 function switchTab(tab) {

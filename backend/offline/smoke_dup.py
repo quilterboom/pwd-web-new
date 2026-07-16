@@ -55,43 +55,62 @@ if g2 is None:
     g2 = json.loads(b)["id"]
 check("存在第二个分组(g2)", g2 is not None)
 
-print("=== 问题4：重复新增拦截 ===")
-# 1) 首次新增 (dupuser / symmetric / g1) → 200
+print("=== 重复新增拦截（按「密码文件名称 + 加密方式」判重）===")
+# 1) 首次新增 (title=dup / symmetric / g1) → 200
 st, b = req("POST", "/api/passwords",
     {"title": "dup", "username": "dupuser", "secret": "s3", "algorithm": "symmetric",
      "group_id": g1, "entry_password": "ep123456", "comment": "新增密码"}, token=tok)
-check("首次新增 dupuser/symmetric/g1 = 200", st == 200)
+check("首次新增 title=dup/symmetric/g1 = 200", st == 200)
 
-# 2) 完全相同 (dupuser / symmetric / g1) → 409 + 明确文案
+# 2) 相同「密码文件名称 + 加密方式」但账号不同 (title=dup / dupuser2 / symmetric / g1) → 409
+#    证明判重依据是密码文件名称而非账号
 st, b = req("POST", "/api/passwords",
-    {"title": "dup2", "username": "dupuser", "secret": "s3", "algorithm": "symmetric",
+    {"title": "dup", "username": "dupuser2", "secret": "s3", "algorithm": "symmetric",
      "group_id": g1, "entry_password": "ep123456", "comment": "新增密码"}, token=tok)
-check("重复 dupuser/symmetric/g1 = 409", st == 409)
+check("重复 title=dup/symmetric/g1（不同账号）= 409", st == 409)
 check("409 文案含『请勿重复新增』", "请勿重复新增" in b)
+check("409 文案含『密码文件名称』", "密码文件名称" in b)
 
-# 3) 同名不同算法 (dupuser / gpg / g1) → 200（不误杀）
+# 3) 同名不同算法 (title=dup / gpg / g1) → 200（加密方式不同不误杀）
 st, b = req("POST", "/api/passwords",
-    {"title": "dupg", "username": "dupuser", "secret": "s3", "algorithm": "gpg",
+    {"title": "dup", "username": "dupuser3", "secret": "s3", "algorithm": "gpg",
      "group_id": g1, "entry_password": "ep123456", "comment": "新增密码"}, token=tok)
-check("同名不同算法 dupuser/gpg/g1 = 200", st == 200)
+check("同名不同算法 title=dup/gpg/g1 = 200", st == 200)
 
-# 4) 同算法不同名 (dupuser2 / symmetric / g1) → 200（不误杀）
+# 4) 同算法不同名 (title=dup3 / symmetric / g1) → 200（不误杀）
 st, b = req("POST", "/api/passwords",
-    {"title": "dup3", "username": "dupuser2", "secret": "s3", "algorithm": "symmetric",
+    {"title": "dup3", "username": "dupuser", "secret": "s3", "algorithm": "symmetric",
      "group_id": g1, "entry_password": "ep123456", "comment": "新增密码"}, token=tok)
-check("同算法不同名 dupuser2/symmetric/g1 = 200", st == 200)
+check("同算法不同名 title=dup3/symmetric/g1 = 200", st == 200)
 
-# 5) 同名同算法跨分组 (dupuser / symmetric / g2) → 200（不同租户不误杀）
+# 5) 同名同算法跨分组 (title=dup / symmetric / g2) → 200（不同分组不误杀）
 st, b = req("POST", "/api/passwords",
-    {"title": "dup4", "username": "dupuser", "secret": "s3", "algorithm": "symmetric",
+    {"title": "dup", "username": "dupuser", "secret": "s3", "algorithm": "symmetric",
      "group_id": g2, "entry_password": "ep123456", "comment": "新增密码"}, token=tok)
-check("跨分组 dupuser/symmetric/g2 = 200", st == 200)
+check("跨分组 title=dup/symmetric/g2 = 200", st == 200)
 
-# 6) 大小写不敏感：DUPUSER / symmetric / g1 → 409
+# 6) 密码文件名称大小写不敏感：title=DUP / symmetric / g1 → 409
 st, b = req("POST", "/api/passwords",
-    {"title": "dup5", "username": "DUPUSER", "secret": "s3", "algorithm": "symmetric",
+    {"title": "DUP", "username": "dupuser4", "secret": "s3", "algorithm": "symmetric",
      "group_id": g1, "entry_password": "ep123456", "comment": "新增密码"}, token=tok)
-check("大小写不敏感 DUPUSER/symmetric/g1 = 409", st == 409)
+check("大小写不敏感 title=DUP/symmetric/g1 = 409", st == 409)
 
-print(f"\n重复新增校验：{ok} 通过 / {fail} 失败")
+print("=== 编辑去重（改名成已存在项应被拦截）===")
+# 编辑源：新增 title=edit-src / symmetric / g1 → 200
+st, b = req("POST", "/api/passwords",
+    {"title": "edit-src", "username": "editsrc", "secret": "s3", "algorithm": "symmetric",
+     "group_id": g1, "entry_password": "ep123456", "comment": "编辑源"}, token=tok)
+check("编辑源新增 title=edit-src/symmetric/g1 = 200", st == 200)
+src_id = json.loads(b)["id"]
+# 改名成已存在的 title=dup（同分组同算法，排除自身）→ 409
+st, b = req("PUT", f"/api/passwords/{src_id}",
+    {"title": "dup", "entry_password": "ep123456"}, token=tok)
+check("编辑改名成已存在 title=dup/symmetric/g1 = 409", st == 409)
+check("409 文案含『请勿重复』", "请勿重复" in b)
+# 改名成不存在的名称 → 200（不误杀）
+st, b = req("PUT", f"/api/passwords/{src_id}",
+    {"title": "edit-new", "entry_password": "ep123456"}, token=tok)
+check("编辑改名成新名称 edit-new = 200", st == 200)
+
+print(f"\n重复新增/编辑校验：{ok} 通过 / {fail} 失败")
 sys.exit(1 if fail else 0)

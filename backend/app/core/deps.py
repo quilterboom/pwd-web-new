@@ -23,7 +23,19 @@ def get_current_user(
 
     # 服务端会话校验：令牌必须对应一个有效（未吊销、未空闲超时）的会话，
     # 否则即便 JWT 未过期也视为登录失效（服务端强制失效）。
-    if not is_session_valid(db, jti):
+    valid, reason = is_session_valid(db, jti)
+    if not valid:
+        if reason == "revoked":
+            # 被新登录（可能来自其它 IP）踢下线
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail="账号已在其他设备/地点登录，本次会话已失效，请重新登录",
+            )
+        if reason == "idle":
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail="登录已失效（长时间未操作），请重新登录",
+            )
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="登录已失效，请重新登录")
 
     user = db.query(User).filter_by(username=username).first()

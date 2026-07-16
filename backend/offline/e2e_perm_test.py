@@ -80,21 +80,23 @@ print("admin token len:", len(admin))
 print("\n=== 2. 权限目录完整性 ===")
 st, catalog = req("GET", "/api/auth/permissions/catalog", token=admin)
 print("catalog:", json.dumps(catalog, ensure_ascii=False))
-expected_groups = {"密码库", "密钥库", "账户", "系统管理（仅管理员可执行，逐用户授权不生效）"}
+expected_groups = {"密码库", "密钥库", "账户"}
 got_groups = {g["category"] for g in catalog}
 check(st==200, f"catalog 返回 200 (实际 {st})")
-check(expected_groups.issubset(got_groups), f"含全部分组 {expected_groups} (实际 {got_groups})")
+check(expected_groups == got_groups, f"目录仅含 {expected_groups}（系统管理已移除，其为管理员专属）(实际 {got_groups})")
 all_keys = set()
 for g in catalog:
     for it in g["items"]:
         all_keys.add(it["key"])
 print("  目录权限键总数:", len(all_keys))
-# 与路由器实际 require_perm 使用的键逐一对照（一致即授权可生效）
+# 与路由器实际 require_perm 使用的「可下放」键逐一对照（一致即授权可生效）
 for need in ["pw.create","pw.edit","pw.delete","pw.batch_delete","pw.import","pw.export","pw.view",
              "key.generate","key.import","key.delete","key.batch_delete",
-             "account.change_password",
-             "sys.user_manage","sys.group_manage","sys.audit_view"]:
+             "account.change_password"]:
     check(need in all_keys, f"目录含 {need}（与 require_perm 一致）")
+# 系统管理类（sys.*）为管理员专属，不应出现在可授权的目录中
+for syskey in ["sys.user_manage","sys.group_manage","sys.audit_view"]:
+    check(syskey not in all_keys, f"目录不含 {syskey}（管理员专属，不可逐用户下放）")
 
 print("\n=== 3. 创建普通用户（无权限记录） ===")
 st, groups = req("GET", "/api/admin/groups", token=admin)

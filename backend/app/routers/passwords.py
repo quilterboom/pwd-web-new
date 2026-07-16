@@ -293,18 +293,19 @@ def create(
 ):
     ensure_group_access(db, user, req.group_id)
 
-    # 重复新增校验：同一分组下不允许「账号名称 + 加密方式」完全相同
+    # 重复新增校验：同一分组下不允许「密码文件名称 + 加密方式」完全相同
+    algo = (req.algorithm or "symmetric").lower()
+    t_name = (req.title or req.username or "").strip().lower()
     existing = (
         db.query(PasswordEntry)
-        .filter_by(group_id=req.group_id, algorithm=req.algorithm, deleted=False)
+        .filter_by(group_id=req.group_id, algorithm=algo, deleted=False)
         .all()
     )
-    u_name = (req.username or "").strip().lower()
     for r in existing:
-        if (r.username or "").strip().lower() == u_name:
+        if (r.title or r.username or "").strip().lower() == t_name:
             raise HTTPException(
                 status_code=409,
-                detail=f"该分组下已存在账号「{req.username}」且加密方式相同（{req.algorithm}），请勿重复新增",
+                detail=f"该分组下已存在密码文件名称「{req.title or req.username}」且加密方式相同（{algo}），请勿重复新增",
             )
 
     fields = _encrypt_for_create(db, user, req)
@@ -578,13 +579,17 @@ async def import_passwords(
             errored += 1
             continue
 
-        # 重复校验：同一分组下「账号 + 加密方式」相同则跳过
-        if db.query(PasswordEntry).filter_by(
-            group_id=group_id, algorithm=algo, username=username, deleted=False
-        ).first():
+        # 重复校验：同一分组下「密码文件名称 + 加密方式」相同则跳过
+        eff_title = (title or username or "").strip().lower()
+        dup = (
+            db.query(PasswordEntry)
+            .filter_by(group_id=group_id, algorithm=algo, deleted=False)
+            .all()
+        )
+        if any((r.title or r.username or "").strip().lower() == eff_title for r in dup):
             results.append(PasswordImportRow(
                 row=idx, username=username, status="error",
-                message="该分组下已存在相同账号与加密方式",
+                message="该分组下已存在相同密码文件名称与加密方式",
             ))
             errored += 1
             continue
@@ -723,6 +728,22 @@ def update(
     algo_changed = target_algo != entry.algorithm or (
         ("entry" if entry.algorithm == "symmetric" else "legacy") != target_scheme
     )
+
+    # 编辑去重校验：同一分组下不允许「密码文件名称 + 加密方式」与「其它条目」完全重复
+    new_title = (req.title if req.title is not None else entry.title) or ""
+    eff_title = (new_title or entry.username or "").strip().lower()
+    dup = (
+        db.query(PasswordEntry)
+        .filter_by(group_id=entry.group_id, algorithm=target_algo, deleted=False)
+        .filter(PasswordEntry.id != pid)
+        .all()
+    )
+    for r in dup:
+        if (r.title or r.username or "").strip().lower() == eff_title:
+            raise HTTPException(
+                status_code=409,
+                detail=f"该分组下已存在密码文件名称「{new_title or entry.username}」且加密方式相同（{target_algo}），请勿重复",
+            )
 
     # 旧式纯 legacy（无解密密码层）且目标仍为 legacy 且未提供新解密密码 -> 维持旧式（不引入条目密码层）
     preserve_noentry = (not has_entry) and target_algo in ("gpg", "sm2") and not (
@@ -881,7 +902,7 @@ def batch_delete(
                 ciphertext=entry.ciphertext,
                 notes=entry.notes,
                 changed_by=user.username,
-                comment=f"批量删除密码（账号：{entry.username or entry.title or '未命名'}）",
+                comment=f"批量删除密码（密码文件名称：{entry.title or entry.username or '未命名'}）",
             )
         )
         deleted += 1
@@ -915,7 +936,7 @@ def delete(
             ciphertext=entry.ciphertext,
             notes=entry.notes,
             changed_by=user.username,
-            comment=f"删除密码（账号：{entry.username or entry.title or '未命名'}）",
+            comment=f"删除密码（密码文件名称：{entry.title or entry.username or '未命名'}）",
         )
     )
     db.commit()

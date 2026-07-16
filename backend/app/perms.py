@@ -16,7 +16,8 @@ from .db import get_db
 from .models import User, UserPermission
 
 # 操作目录：按页面分组展示。key 必须与后端 require_perm 使用的常量完全一致。
-# 「系统管理」类操作本质仅管理员可执行，逐用户授权对其不生效，仅作展示与说明。
+# 注：「系统管理」类操作（用户 / 分组 / 审计日志）由 require_perm 强制仅管理员可用，
+# 故不放入此目录——避免在「逐用户授权」页面展示其勾选项（对管理员无意义、也易被误认为可下放普通用户）。
 PERMISSION_CATALOG = [
     {
         "category": "密码库",
@@ -43,14 +44,6 @@ PERMISSION_CATALOG = [
         "category": "账户",
         "items": [
             {"key": "account.change_password", "label": "修改密码"},
-        ],
-    },
-    {
-        "category": "系统管理（仅管理员可执行，逐用户授权不生效）",
-        "items": [
-            {"key": "sys.user_manage", "label": "用户管理"},
-            {"key": "sys.group_manage", "label": "分组管理"},
-            {"key": "sys.audit_view", "label": "查看审计日志"},
         ],
     },
 ]

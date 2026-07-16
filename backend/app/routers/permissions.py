@@ -1,4 +1,4 @@
-"""授权管理（仅超级管理员）：查看 / 设置 / 重置 指定用户的操作权限。
+"""授权管理（所有管理员可用）：查看 / 设置 / 重置 指定用户的操作权限。
 
 - GET  /api/admin/permissions/users/{uid}  → 返回该用户被允许的操作清单（null=全部可用）
 - PUT  /api/admin/permissions/users/{uid}  → 覆盖写入允许清单（body: {"permissions": [...]}）
@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from ..core.deps import require_global_admin
+from ..core.deps import require_admin
 from ..db import get_db
 from ..models import User
 from ..perms import (
@@ -31,7 +31,7 @@ class UserPermRequest(BaseModel):
 @router.get("/users/{uid}")
 def get_user_perm(
     uid: int,
-    _: User = Depends(require_global_admin),
+    _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     user = db.query(User).filter_by(id=uid).first()
@@ -44,7 +44,7 @@ def get_user_perm(
 def put_user_perm(
     uid: int,
     req: UserPermRequest,
-    _: User = Depends(require_global_admin),
+    _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     user = db.query(User).filter_by(id=uid).first()
@@ -62,7 +62,7 @@ def put_user_perm(
 @router.delete("/users/{uid}")
 def delete_user_perm(
     uid: int,
-    _: User = Depends(require_global_admin),
+    _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     user = db.query(User).filter_by(id=uid).first()

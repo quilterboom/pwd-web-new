@@ -44,6 +44,8 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       TOKEN_EXPIRE_MINUTES: ${TOKEN_EXPIRE_MINUTES:-1440}
+      # 登录态空闲失效阈值（秒）：超过该时长无任何操作，令牌在服务端被吊销。默认 600（10 分钟）
+      SESSION_IDLE_SECONDS: ${SESSION_IDLE_SECONDS:-600}
       SECRET_KEY: ${SECRET_KEY:-}
       # ── HTTPS 相关（不设则维持明文 HTTP）──
       SSL_CERTFILE: ${SSL_CERTFILE:-}
