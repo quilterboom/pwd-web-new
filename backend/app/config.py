@@ -50,3 +50,29 @@ REGISTER_DEFAULT_GROUP = os.getenv("REGISTER_DEFAULT_GROUP", DEFAULT_GROUP_NAME)
 
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "9010"))
+
+# ───── 4A 统一认证（中广核 UAP 风格 OAuth2 授权码）─────
+# 全部通过环境变量提供；留空 / 不启用即不接入，登录页走普通账号密码。
+# 启用后：未登录用户访问页面时，后端对 authorizeUrl 做短超时探活，
+#   可达 → 前端自动跳转 4A 登录；不可达 → 回退普通账号密码登录。
+FOURA_ENABLED = os.getenv("FOURA_ENABLED", "0") in ("1", "true", "yes", "on")
+# 4A 各端点完整 URL（内网部署时填内网地址，例如 https://uap.xxx.cgnpc.com.cn/...）
+FOURA_AUTHORIZE_URL = os.getenv("FOURA_AUTHORIZE_URL", "")
+FOURA_TOKEN_URL = os.getenv("FOURA_TOKEN_URL", "")
+FOURA_USERINFO_URL = os.getenv("FOURA_USERINFO_URL", "")
+FOURA_CLIENT_ID = os.getenv("FOURA_CLIENT_ID", "")
+# 4A 约定：把 state 的值当作 client_secret 发送（见 4A示例 GH4AComponent）；
+# 若平台另有独立 secret，用 FOURA_CLIENT_SECRET 覆盖。
+FOURA_STATE = os.getenv("FOURA_STATE", "")
+FOURA_CLIENT_SECRET = os.getenv("FOURA_CLIENT_SECRET", "")
+# 4A 登录成功后回跳本系统的地址（必须在 4A 平台侧登记）；例如 http://内网IP:9010/api/auth/4a/callback
+FOURA_REDIRECT_URI = os.getenv("FOURA_REDIRECT_URI", "")
+# 4A 返回 JSON 中的「用户唯一标识」字段名（4A示例为 usercode）
+FOURA_USER_FIELD = os.getenv("FOURA_USER_FIELD", "usercode")
+# 把上面的标识映射到本系统本地用户表的字段（默认 username）；如需按工号匹配可改 employee_no 等
+FOURA_LOCAL_MATCH_FIELD = os.getenv("FOURA_LOCAL_MATCH_FIELD", "username")
+# 4A 令牌/用户端点 HTTP 方法（4A示例用 GET；若平台要求 POST 改 POST）
+FOURA_TOKEN_METHOD = os.getenv("FOURA_TOKEN_METHOD", "GET").upper()
+FOURA_USERINFO_METHOD = os.getenv("FOURA_USERINFO_METHOD", "GET").upper()
+# 探活超时（秒）：决定「请求得通」的判定快慢
+FOURA_PROBE_TIMEOUT = float(os.getenv("FOURA_PROBE_TIMEOUT", "2"))
